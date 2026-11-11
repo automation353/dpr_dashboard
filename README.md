@@ -46,3 +46,15 @@ Then open http://<host>:8020/ . Health probe: `/healthz`.
 A **Webhook** trigger feeds the **DPR Date Window** node, which uses the posted
 `fromDate`/`toDate` when present and otherwise falls back to month-to-date (so the
 21:00 schedule is unchanged). A **Respond to Webhook** node returns `{ok, rows}`.
+
+## Validating against TCS iON
+`scripts/validate_ion.py` checks the dashboard against TCS iON day by day. It
+calls iON read-only through `/opt/dpr_sync` (no database writes) and compares,
+per day: the Direct JR numbers, the line count, the produced qty per JR/item
+(counted once per JR) and the daily total.
+```bash
+python3 scripts/validate_ion.py 2026-10-01:2026-11-11   # range, or single dates
+```
+Each day prints `MATCH` or `DIFF` with the reason; exit code is 0 only if all
+days match. The nightly sync re-reads just the last 3 days, so run this over
+older ranges to catch JRs edited or cancelled in iON after they were synced.
