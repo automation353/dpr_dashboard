@@ -1,0 +1,17 @@
+# Virtualenv (rebuild with: python3 -m venv .venv && .venv/bin/pip install -r requirements.txt)
+.venv/
+__pycache__/
+*.pyc
+
+# Local data / runtime output
+db.sqlite3
+staticfiles/
+logs/
+
+# Local backups (may contain copies of /root/.env secrets)
+backup_*/
+
+# Env files never belong in git (config lives in /root/.env)
+.env
+*.env
+*.env.bak

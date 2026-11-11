@@ -1,0 +1,418 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DPR Dashboard — Daily Production</title>
+{% verbatim %}
+<style>
+  :root {
+    --bg: #0f1724;
+    --panel: #15213a;
+    --panel-2: #1b2a49;
+    --line: #27385f;
+    --ink: #eaf0fb;
+    --muted: #9fb0d0;
+    --accent: #3b82f6;
+    --accent-2: #22c55e;
+    --warn: #f59e0b;
+    --danger: #ef4444;
+    --cell: #101b31;
+    --zero: #56688f;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: system-ui, -apple-system, "Segoe UI", Roboto, Arial, sans-serif;
+    background: var(--bg);
+    color: var(--ink);
+  }
+  header {
+    padding: 18px 22px;
+    background: linear-gradient(90deg, #122038 0%, #16233f 100%);
+    border-bottom: 1px solid var(--line);
+    display: flex; align-items: center; gap: 14px; flex-wrap: wrap;
+  }
+  header .logo {
+    width: 38px; height: 38px; border-radius: 9px;
+    background: linear-gradient(135deg, var(--accent), var(--accent-2));
+    display: grid; place-items: center; font-weight: 800; color: #04121f;
+  }
+  header h1 { font-size: 18px; margin: 0; letter-spacing: .2px; }
+  header .sub { color: var(--muted); font-size: 12.5px; margin-top: 2px; }
+  main { padding: 18px 22px 60px; }
+
+  .controls {
+    display: flex; gap: 14px; align-items: flex-end; flex-wrap: wrap;
+    background: var(--panel); border: 1px solid var(--line);
+    border-radius: 12px; padding: 14px 16px; margin-bottom: 16px;
+  }
+  .field { display: flex; flex-direction: column; gap: 5px; }
+  .field label { font-size: 11.5px; color: var(--muted); text-transform: uppercase; letter-spacing: .5px; }
+  input[type=date] {
+    background: var(--cell); color: var(--ink);
+    border: 1px solid var(--line); border-radius: 8px;
+    padding: 8px 10px; font-size: 14px; color-scheme: dark;
+  }
+  button {
+    border: 0; border-radius: 8px; padding: 9px 15px; font-size: 13.5px;
+    font-weight: 600; cursor: pointer; color: #04121f;
+  }
+  button.primary { background: var(--accent); color: #fff; }
+  button.pull { background: var(--accent-2); color: #04121f; }
+  button.ghost { background: transparent; color: var(--muted); border: 1px solid var(--line); }
+  button:disabled { opacity: .55; cursor: not-allowed; }
+  .spacer { flex: 1; }
+  .status { font-size: 13px; color: var(--muted); min-height: 18px; }
+  .status.err { color: var(--danger); }
+  .status.ok { color: var(--accent-2); }
+
+  .tiles { display: flex; gap: 12px; flex-wrap: wrap; margin-bottom: 16px; }
+  .tile {
+    background: var(--panel); border: 1px solid var(--line); border-radius: 12px;
+    padding: 12px 16px; min-width: 150px;
+  }
+  .tile .k { font-size: 11.5px; color: var(--muted); text-transform: uppercase; letter-spacing: .5px; }
+  .tile .v { font-size: 23px; font-weight: 700; margin-top: 4px; }
+
+  .grid-wrap {
+    border: 1px solid var(--line); border-radius: 12px; overflow: auto;
+    background: var(--panel); max-height: 72vh;
+  }
+  table { border-collapse: separate; border-spacing: 0; width: 100%; font-size: 13px; }
+  th, td { padding: 8px 10px; white-space: nowrap; border-bottom: 1px solid var(--line); }
+  thead th {
+    position: sticky; top: 0; z-index: 3; background: var(--panel-2);
+    text-align: right; font-weight: 600; color: var(--muted);
+  }
+  thead th.item, tbody td.item {
+    position: sticky; left: 0; z-index: 2; text-align: left;
+    background: var(--panel-2); min-width: 240px; max-width: 320px;
+  }
+  thead th.item { z-index: 4; }
+  tbody td.item { background: var(--panel); border-right: 1px solid var(--line); }
+  .erp { font-weight: 600; }
+  .fg { color: var(--muted); font-size: 11.5px; }
+  td.num { text-align: right; font-variant-numeric: tabular-nums; }
+  td.zero { color: #56688f; }
+  th.tot, td.tot {
+    position: sticky; right: 0; background: var(--panel-2);
+    font-weight: 700; border-left: 1px solid var(--line);
+  }
+  tbody tr:hover td { background: #1a2a49; }
+  tbody tr:hover td.item { background: #1d2f52; }
+  tfoot td {
+    position: sticky; bottom: 0; background: var(--panel-2); font-weight: 700;
+    text-align: right; border-top: 2px solid var(--line);
+  }
+  tfoot td.item { left: 0; z-index: 2; text-align: left; }
+  tfoot td.tot { right: 0; z-index: 3; }
+
+  .switch { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
+  .seg {
+    background: var(--panel); color: var(--muted); border: 1px solid var(--line);
+    padding: 7px 14px; font-weight: 600;
+  }
+  .seg.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+  .switch-note { color: var(--muted); font-size: 12px; margin-left: 6px; }
+  .empty { padding: 42px; text-align: center; color: var(--muted); }
+  .hint { font-size: 12px; color: var(--muted); margin-top: 10px; }
+  .pill { font-size: 11px; padding: 2px 8px; border-radius: 999px; background: var(--panel-2); color: var(--muted); border: 1px solid var(--line); }
+</style>
+{% endverbatim %}
+</head>
+<body>
+<header>
+  <div class="logo">DPR</div>
+  <div>
+    <h1>DPR Dashboard — Daily Production</h1>
+    <div class="sub">Direct Job Receipt • reads live from the DPR database API</div>
+  </div>
+  <div class="spacer"></div>
+  <span class="pill" id="pullPill">Source: database API</span>
+</header>
+
+<main>
+  <div class="controls">
+    <div class="field">
+      <label for="from">From date</label>
+      <input type="date" id="from">
+    </div>
+    <div class="field">
+      <label for="to">To date</label>
+      <input type="date" id="to">
+    </div>
+    <button class="primary" id="refreshBtn">Refresh view</button>
+    <button class="pull" id="pullBtn" {% if not pull_enabled %}disabled style="display:none"{% endif %}>Pull from iON → Sheet</button>
+    <div class="spacer"></div>
+    <div class="field" style="align-items:flex-end;">
+      <label>&nbsp;</label>
+      <div class="status" id="status">Ready.</div>
+    </div>
+  </div>
+
+  <div class="tiles">
+    <div class="tile"><div class="k">Total produced</div><div class="v" id="tGrand">—</div></div>
+    <div class="tile"><div class="k">Items</div><div class="v" id="tItems">—</div></div>
+    <div class="tile"><div class="k">Days with data</div><div class="v" id="tDays">—</div></div>
+    <div class="tile"><div class="k">Range</div><div class="v" id="tRange" style="font-size:15px;">—</div></div>
+  </div>
+
+  <div class="switch">
+    <button class="seg active" id="segGrid" data-view="grid">Day-wise quantity</button>
+    <button class="seg" id="segDetail" data-view="detail">All detail</button>
+    <span class="switch-note" id="switchNote"></span>
+  </div>
+
+  <div class="grid-wrap">
+    <div id="grid"><div class="empty">Loading…</div></div>
+  </div>
+  <div class="hint" id="hint">Produced quantity is counted once per Direct JR (it repeats on every raw-material line). Heaviest producers are listed first.</div>
+</main>
+
+{% verbatim %}
+<script>
+(function () {
+  const $ = (id) => document.getElementById(id);
+  const fromEl = $('from'), toEl = $('to'), statusEl = $('status');
+  const refreshBtn = $('refreshBtn'), pullBtn = $('pullBtn');
+
+  const pad = (n) => String(n).padStart(2, '0');
+  const isoOf = (d) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+  const fmtNum = (n) => (Math.round((+n || 0) * 100) / 100).toLocaleString('en-IN');
+  const shortDate = (iso) => { const [y, m, d] = iso.split('-'); return `${d}/${m}`; };
+
+  // Default = month-to-date (1st of this month → today), matching the n8n flow.
+  (function initDates() {
+    const now = new Date();
+    fromEl.value = isoOf(new Date(now.getFullYear(), now.getMonth(), 1));
+    toEl.value = isoOf(now);
+  })();
+
+  function setStatus(msg, kind) {
+    statusEl.textContent = msg;
+    statusEl.className = 'status' + (kind ? ' ' + kind : '');
+  }
+
+  function renderEmpty(msg) {
+    $('grid').innerHTML = `<div class="empty">${msg}</div>`;
+    $('tGrand').textContent = '—';
+    $('tItems').textContent = '—';
+    $('tDays').textContent = '—';
+  }
+
+  function render(data) {
+    const { dates, items, daily_totals, grand_total } = data;
+    $('tGrand').textContent = fmtNum(grand_total);
+    $('tItems').textContent = items.length.toLocaleString('en-IN');
+    $('tDays').textContent = dates.length.toLocaleString('en-IN');
+    $('tRange').textContent = dates.length ? `${shortDate(dates[0])} – ${shortDate(dates[dates.length - 1])}` : '—';
+
+    if (!items.length) {
+      renderEmpty('No production rows in this date range.');
+      return;
+    }
+
+    // No date dimension in the sheet yet (flow writes a month total per item):
+    // show a totals-only table and a note. Once the flow emits a date column,
+    // `dates` is non-empty and we fall through to the full day-by-day grid.
+    if (!dates.length) {
+      let rows = '<thead><tr><th class="item">Item (ERP / FG code)</th><th class="tot">Produced qty</th></tr></thead><tbody>';
+      for (const it of items) {
+        rows += `<tr><td class="item"><div class="erp">${it.erp_code}</div>` +
+                (it.fg_item_code ? `<div class="fg">${it.fg_item_code}</div>` : '') + '</td>' +
+                `<td class="num tot">${fmtNum(it.total)}</td></tr>`;
+      }
+      rows += `</tbody><tfoot><tr><td class="item">Total</td><td class="num tot">${fmtNum(grand_total)}</td></tr></tfoot>`;
+      $('grid').innerHTML =
+        `<div style="padding:10px 12px;color:var(--warn);font-size:12.5px;border-bottom:1px solid var(--line);">` +
+        `The sheet currently holds a month total per item (no date column), so a day-by-day grid isn't available yet. ` +
+        `Showing per-item totals. Once the n8n flow writes a <b>date</b> column, this becomes a date-wise grid automatically.</div>` +
+        `<table>${rows}</table>`;
+      return;
+    }
+
+    let head = '<thead><tr><th class="item">Item (ERP / FG code)</th>';
+    for (const d of dates) head += `<th title="${d}">${shortDate(d)}</th>`;
+    head += '<th class="tot">Total</th></tr></thead>';
+
+    let body = '<tbody>';
+    for (const it of items) {
+      body += `<tr><td class="item"><div class="erp">${it.erp_code}</div>` +
+              (it.fg_item_code ? `<div class="fg">${it.fg_item_code}</div>` : '') + '</td>';
+      for (const d of dates) {
+        const q = it.by_date[d] || 0;
+        body += `<td class="num${q ? '' : ' zero'}">${q ? fmtNum(q) : '·'}</td>`;
+      }
+      body += `<td class="num tot">${fmtNum(it.total)}</td></tr>`;
+    }
+    body += '</tbody>';
+
+    let foot = '<tfoot><tr><td class="item">Daily total</td>';
+    for (const d of dates) foot += `<td class="num">${fmtNum(daily_totals[d] || 0)}</td>`;
+    foot += `<td class="num tot">${fmtNum(grand_total)}</td></tr></tfoot>`;
+
+    $('grid').innerHTML = `<table>${head}${body}${foot}</table>`;
+  }
+
+  let viewMode = 'grid';
+
+  function renderDetail(data) {
+    $('tGrand').textContent = '—';
+    $('tItems').textContent = '—';
+    $('tDays').textContent = '—';
+    $('tRange').textContent = '—';
+    const { headers, rows } = data;
+    if (!headers.length || !rows.length) {
+      renderEmpty('No rows in this date range.');
+      return;
+    }
+    let head = '<thead><tr><th class="item">#</th>';
+    for (const h of headers) head += `<th style="text-align:left">${h}</th>`;
+    head += '</tr></thead><tbody>';
+    let body = '';
+    rows.forEach((r, i) => {
+      body += `<tr><td class="item" style="min-width:52px">${i + 1}</td>`;
+      for (const c of r) body += `<td style="text-align:left">${(c ?? '')}</td>`;
+      body += '</tr>';
+    });
+    $('grid').innerHTML = `<table>${head}${body}</tbody></table>`;
+  }
+
+  async function loadDetail() {
+    setStatus('Loading detail…');
+    try {
+      const u = new URL(window.location.origin + '/api/detail');
+      if (fromEl.value) u.searchParams.set('from', fromEl.value);
+      if (toEl.value) u.searchParams.set('to', toEl.value);
+      const r = await fetch(u);
+      const data = await r.json();
+      if (!r.ok || !data.ok) {
+        renderEmpty('Could not read the DPR data.');
+        setStatus(data.error || ('HTTP ' + r.status), 'err');
+        return;
+      }
+      renderDetail(data);
+      setStatus(`Showing ${data.row_count.toLocaleString('en-IN')} detail row(s)` +
+                (data.truncated ? ' (truncated)' : '') +
+                (data.date_col == null ? ' — no date column in the sheet yet.' : '.'), 'ok');
+    } catch (e) {
+      renderEmpty('Network error.');
+      setStatus(String(e), 'err');
+    }
+  }
+
+  function loadView() { return viewMode === 'detail' ? loadDetail() : loadData(); }
+
+  async function loadData() {
+    setStatus('Loading data…');
+    refreshBtn.disabled = true;
+    try {
+      const u = new URL(window.location.origin + '/api/data');
+      if (fromEl.value) u.searchParams.set('from', fromEl.value);
+      if (toEl.value) u.searchParams.set('to', toEl.value);
+      const r = await fetch(u);
+      const data = await r.json();
+      if (!r.ok || !data.ok) {
+        renderEmpty('Could not read the DPR data.');
+        setStatus(data.error || ('HTTP ' + r.status), 'err');
+        return;
+      }
+      render(data);
+      const across = data.has_dates ? ` across ${data.dates.length} day(s)` : ' (month totals — no date column yet)';
+      setStatus(`Loaded ${data.items.length.toLocaleString('en-IN')} items${across}.`, 'ok');
+    } catch (e) {
+      renderEmpty('Network error.');
+      setStatus(String(e), 'err');
+    } finally {
+      refreshBtn.disabled = false;
+    }
+  }
+
+  const sleep = (ms) => new Promise((res) => setTimeout(res, ms));
+
+  async function fetchData() {
+    const u = new URL(window.location.origin + '/api/data');
+    if (fromEl.value) u.searchParams.set('from', fromEl.value);
+    if (toEl.value) u.searchParams.set('to', toEl.value);
+    const r = await fetch(u);
+    return r.ok ? r.json() : null;
+  }
+
+  // The n8n flow acks immediately then writes the sheet in the background
+  // (a full month of raw detail lands as one batch after ~1–3 min). Poll the
+  // sheet until the row count appears and holds steady, rendering as it fills.
+  async function pollUntilDone(startCount) {
+    const deadline = Date.now() + 240000;   // up to 4 min
+    let last = -1, stable = 0;
+    while (Date.now() < deadline) {
+      await sleep(8000);
+      let n = startCount;
+      try {
+        const d = await fetchData();
+        if (d && d.ok) { if (viewMode === 'grid') render(d); n = d.row_count || 0; }
+      } catch (e) { /* keep polling */ }
+      if (n > startCount && n === last) {
+        stable++;
+        if (stable >= 2) {
+          if (viewMode === 'detail') await loadDetail();
+          setStatus(`Pull complete — ${n.toLocaleString('en-IN')} production entries written.`, 'ok');
+          return;
+        }
+      } else {
+        stable = 0;
+      }
+      setStatus(`Pulling… ${n.toLocaleString('en-IN')} entries in the sheet so far (writing can take 1–3 min).`);
+      last = n;
+    }
+    await loadView();
+    setStatus('Still writing after a few minutes — showing the latest. Click Refresh view to update again.', 'err');
+  }
+
+  async function pull() {
+    if (!fromEl.value || !toEl.value) { setStatus('Pick a from and to date first.', 'err'); return; }
+    const range = `${fromEl.value} → ${toEl.value}`;
+    if (!confirm(`Pull DPR data from iON for ${range} and write it into the Google Sheet?\n\nThis replaces the sheet's current DPR data with this pull.`)) return;
+    pullBtn.disabled = true; refreshBtn.disabled = true;
+    // row count before, so we can detect the new batch landing.
+    let before = 0;
+    try { const d0 = await fetchData(); before = (d0 && d0.ok) ? (d0.row_count || 0) : 0; } catch (e) {}
+    setStatus(`Starting pull ${range} from iON…`);
+    try {
+      const r = await fetch('/api/pull', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ from: fromEl.value, to: toEl.value }),
+      });
+      const data = await r.json();
+      if (!r.ok || !data.ok) {
+        setStatus('Pull failed: ' + (data.error || ('HTTP ' + r.status)), 'err');
+        return;
+      }
+      setStatus('Pull started — iON is being fetched and written to the sheet…');
+      await pollUntilDone(before);
+    } catch (e) {
+      setStatus('Pull error: ' + e, 'err');
+    } finally {
+      pullBtn.disabled = false; refreshBtn.disabled = false;
+    }
+  }
+
+  function setView(mode) {
+    viewMode = mode;
+    $('segGrid').classList.toggle('active', mode === 'grid');
+    $('segDetail').classList.toggle('active', mode === 'detail');
+    $('hint').style.display = mode === 'grid' ? '' : 'none';
+    loadView();
+  }
+
+  refreshBtn.addEventListener('click', loadView);
+  pullBtn.addEventListener('click', pull);
+  $('segGrid').addEventListener('click', () => setView('grid'));
+  $('segDetail').addEventListener('click', () => setView('detail'));
+  loadData();
+})();
+</script>
+{% endverbatim %}
+</body>
+</html>
