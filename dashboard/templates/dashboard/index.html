@@ -143,6 +143,7 @@
       <input type="date" id="to">
     </div>
     <button class="primary" id="refreshBtn">Refresh view</button>
+    <button class="ghost" id="exportBtn" title="Download All Details for the chosen dates as Excel">Export to Excel</button>
     <button class="pull" id="pullBtn" {% if not pull_enabled %}disabled style="display:none"{% endif %}>Pull from iON → Sheet</button>
     <div class="spacer"></div>
     <div class="field" style="align-items:flex-end;">
@@ -407,6 +408,13 @@
   }
 
   refreshBtn.addEventListener('click', loadView);
+  $('exportBtn').addEventListener('click', () => {
+    const u = new URL(window.location.origin + '/api/export.xlsx');
+    if (fromEl.value) u.searchParams.set('from', fromEl.value);
+    if (toEl.value) u.searchParams.set('to', toEl.value);
+    setStatus('Preparing Excel… the download starts when it is ready.', 'ok');
+    window.location.href = u.toString();
+  });
   pullBtn.addEventListener('click', pull);
   $('segGrid').addEventListener('click', () => setView('grid'));
   $('segDetail').addEventListener('click', () => setView('detail'));

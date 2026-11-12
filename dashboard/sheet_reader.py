@@ -310,7 +310,7 @@ def _empty(error=None, columns=None):
 _MAX_DETAIL_ROWS = 20000
 
 
-def read_dpr_detail(from_iso=None, to_iso=None, timeout=30):
+def read_dpr_detail(from_iso=None, to_iso=None, timeout=30, max_rows=_MAX_DETAIL_ROWS):
     """Return the raw DPR rows (ALL columns) for the date range — the
     "all the data visible" detail table.
 
@@ -321,7 +321,7 @@ def read_dpr_detail(from_iso=None, to_iso=None, timeout=30):
     """
     try:
         all_rows = _fetch_api_rows(from_iso, to_iso, timeout=max(timeout, 60),
-                                   max_rows=_MAX_DETAIL_ROWS + 1)
+                                   max_rows=max_rows + 1)
     except Exception as exc:                        # noqa: BLE001
         log.exception('DPR API fetch failed')
         return {'ok': False, 'headers': [], 'rows': [], 'date_col': None,
@@ -357,7 +357,7 @@ def read_dpr_detail(from_iso=None, to_iso=None, timeout=30):
         # Normalise width to the header so the table lines up.
         row = list(r) + [''] * (len(headers) - len(r))
         out.append(row[:len(headers)])
-        if len(out) >= _MAX_DETAIL_ROWS:
+        if len(out) >= max_rows:
             truncated = True
             break
 

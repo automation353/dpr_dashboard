@@ -2,19 +2,25 @@
 
 - index     : render the single-page dashboard.
 - api_data  : read the DPR sheet live and return the date-wise pivot (JSON).
+- api_export: download the All Details rows for the dates as .xlsx.
 - api_pull  : trigger the n8n DPR pull for a chosen date range, wait, return.
 - healthz   : liveness probe.
 """
 
+import io
 import json
 import logging
 import re
+from datetime import date
 
 import requests
 from django.conf import settings
-from django.http import JsonResponse
+from django.http import HttpResponse, JsonResponse
 from django.shortcuts import render
 from django.views.decorators.http import require_http_methods
+from openpyxl import Workbook
+from openpyxl.cell import WriteOnlyCell
+from openpyxl.styles import Font
 
 from .sheet_reader import read_dpr_detail, read_dpr_rows
 
@@ -61,6 +67,68 @@ def api_detail(request):
     data = read_dpr_detail(from_iso=from_iso or None, to_iso=to_iso or None)
     status = 200 if data.get('ok') else 502
     return JsonResponse(data, status=status)
+
+
+# Excel's sheet limit is 1,048,576 rows; a full month of DPR lines is ~100k.
+_EXPORT_MAX_ROWS = 500000
+_PLAIN_NUMBER = re.compile(r'^-?(0|[1-9]\d*)(\.\d+)?$')   # no leading zeros, no exponent
+_ISO_DATE = re.compile(r'^\d{4}-\d{2}-\d{2}$')
+
+
+def _xl_value(v):
+    """Detail cell (string) -> Excel value: real numbers/dates, codes stay text."""
+    t = str(v)
+    if _PLAIN_NUMBER.match(t):
+        return float(t) if '.' in t else int(t)
+    if _ISO_DATE.match(t):
+        try:
+            return date.fromisoformat(t)
+        except ValueError:
+            return t
+    return t
+
+
+def api_export(request):
+    """Download the All Details table for the chosen dates as an .xlsx file."""
+    from_iso = _iso(request.GET.get('from'))
+    to_iso = _iso(request.GET.get('to'))
+    data = read_dpr_detail(from_iso=from_iso or None, to_iso=to_iso or None,
+                           max_rows=_EXPORT_MAX_ROWS)
+    if not data.get('ok'):
+        return JsonResponse(data, status=502)
+
+    wb = Workbook(write_only=True)
+    ws = wb.create_sheet('All details')
+    bold = Font(bold=True)
+    header = []
+    for h in data['headers']:
+        c = WriteOnlyCell(ws, value=h)
+        c.font = bold
+        header.append(c)
+    ws.freeze_panes = 'A2'
+    ws.append(header)
+    for row in data['rows']:
+        out = []
+        for i, v in enumerate(row):
+            val = _xl_value(v)
+            if isinstance(val, date):
+                c = WriteOnlyCell(ws, value=val)
+                c.number_format = 'DD-MM-YYYY'
+                out.append(c)
+            else:
+                out.append(val)
+        ws.append(out)
+
+    buf = io.BytesIO()
+    wb.save(buf)
+    name = f'DPR_all_details_{from_iso or "start"}_to_{to_iso or "end"}.xlsx'
+    resp = HttpResponse(
+        buf.getvalue(),
+        content_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+    resp['Content-Disposition'] = f'attachment; filename="{name}"'
+    if data.get('truncated'):
+        resp['X-DPR-Truncated'] = f'first {_EXPORT_MAX_ROWS} rows'
+    return resp
 
 
 @require_http_methods(['POST'])
