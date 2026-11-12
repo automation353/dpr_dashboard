@@ -36,11 +36,12 @@ from datetime import date
 from pathlib import Path
 
 from django.conf import settings
-from openpyxl import Workbook
-from openpyxl.cell import WriteOnlyCell
-from openpyxl.styles import Font
+import queue
+import threading
+
 
 from .sheet_reader import _iter_api_rows, count_dpr_lines
+from .xlsx_stream import XlsxStreamWriter
 
 log = logging.getLogger(__name__)
 
@@ -51,7 +52,7 @@ KEEP_SECONDS = 24 * 3600            # finished files are kept for a day
 MEMORY_CAP = 1536 * 1024 * 1024     # address-space cap (fallback when systemd-run is missing)
 CPU_QUOTA = '50%'                   # of ONE core, for the whole export unit
 MEMORY_MAX = '1G'
-PAGE_PAUSE_MIN = 0.5                # seconds to rest between API pages (at least)
+PAGE_PAUSE = 0.2                    # seconds to rest between API pages
 # Internal database columns: no business meaning, and row_hash/fetched_at are
 # near-random text that barely compresses (they were ~25% of a 36 MB file).
 EXPORT_SKIP_COLUMNS = {'id', 'row_hash', 'fetched_at'}
@@ -232,52 +233,63 @@ def run_job(job_id):
                 pass
 
 
+_DONE = object()
+
+
+def _prefetch(stream, chunk=2000, depth=8):
+    """Run the API stream in a background thread so the next page is being
+    fetched (by dpr-api, in its own process) while this one is written."""
+    q = queue.Queue(maxsize=depth)
+
+    def pump():
+        try:
+            batch = []
+            for item in stream:
+                batch.append(item)
+                if len(batch) >= chunk:
+                    q.put(batch)
+                    batch = []
+            if batch:
+                q.put(batch)
+            q.put(_DONE)
+        except BaseException as exc:                 # noqa: BLE001  - re-raised below
+            q.put(exc)
+
+    threading.Thread(target=pump, daemon=True, name='dpr-export-fetch').start()
+    while True:
+        item = q.get()
+        if item is _DONE:
+            return
+        if isinstance(item, BaseException):
+            raise item
+        yield from item
+
+
 def _write(job_id, meta):
     _write_meta(job_id, state='running', started=time.time())
-    wb = Workbook(write_only=True)
-    bold = Font(bold=True)
-    stream = _iter_api_rows(meta['from'], meta['to'], page_pause=PAGE_PAUSE_MIN)
-    header = next(stream, None)
-    n = 0
-    if header is None:
-        wb.create_sheet('All details')
-    else:
-        keep = [i for i, h in enumerate(header) if h not in EXPORT_SKIP_COLUMNS]
-        header = [header[i] for i in keep]
-
-        def new_sheet(number):
-            ws = wb.create_sheet('All details' if number == 1 else f'All details ({number})')
-            ws.freeze_panes = 'A2'
-            cells = []
-            for h in header:
-                c = WriteOnlyCell(ws, value=h)
-                c.font = bold
-                cells.append(c)
-            ws.append(cells)
-            return ws
-
-        sheet_no, ws, on_sheet = 1, new_sheet(1), 0
-        for row in stream:
-            if on_sheet >= SHEET_MAX_ROWS:              # sheet full: continue on the next one
-                sheet_no += 1
-                ws, on_sheet = new_sheet(sheet_no), 0
-            out = []
-            for i in keep:
-                val = _xl_value(row[i])
-                if isinstance(val, date):
-                    c = WriteOnlyCell(ws, value=val)
-                    c.number_format = 'DD-MM-YYYY'
-                    out.append(c)
-                else:
-                    out.append(val)
-            ws.append(out)
-            n += 1
-            on_sheet += 1
-            if n % 5000 == 0:
-                _write_meta(job_id, rows=n)
-    _write_meta(job_id, rows=n, state='saving')
+    stream = _prefetch(_iter_api_rows(meta['from'], meta['to'], page_pause=PAGE_PAUSE))
     tmp = EXPORT_DIR / f'{job_id}.xlsx.part'
-    wb.save(str(tmp))
+    n = 0
+    with XlsxStreamWriter(str(tmp)) as xw:
+        header = next(stream, None)
+        if header is None:
+            xw.start_sheet('All details', [])
+        else:
+            keep = [i for i, h in enumerate(header) if h not in EXPORT_SKIP_COLUMNS]
+            header = [header[i] for i in keep]
+            sheet_no, on_sheet = 1, 0
+            xw.start_sheet('All details', header)
+            for row in stream:
+                if on_sheet >= SHEET_MAX_ROWS:          # sheet full: continue on the next one
+                    sheet_no += 1
+                    on_sheet = 0
+                    xw.start_sheet(f'All details ({sheet_no})', header)
+                xw.write_row([_xl_value(row[i]) for i in keep])
+                n += 1
+                on_sheet += 1
+                if n % 5000 == 0:
+                    _write_meta(job_id, rows=n)
+        _write_meta(job_id, rows=n, state='saving')
     tmp.replace(file_path(job_id))
     _write_meta(job_id, rows=n, state='done', finished=time.time(),
                 size=file_path(job_id).stat().st_size)

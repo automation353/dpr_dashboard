@@ -113,9 +113,8 @@ def _iter_api_rows(from_iso=None, to_iso=None, timeout=60, max_rows=None, page_p
     at a time, so long ranges (e.g. April to today, ~590k lines) stay small.
     With no date range, defaults to month-to-date. Raises on config/HTTP error.
 
-    page_pause > 0 (background export): after each page, rest at least that
-    many seconds and at least as long as the page took, so the API/PostgreSQL
-    side runs at no more than ~half its capacity.
+    page_pause > 0 (background export): rest that many seconds after each
+    page, so the API/PostgreSQL side is never hit back-to-back.
     """
     url = settings.DPR_API_URL
     key = settings.DPR_API_KEY
@@ -136,7 +135,6 @@ def _iter_api_rows(from_iso=None, to_iso=None, timeout=60, max_rows=None, page_p
     headers, seen_ids, offset, n = None, set(), 0, 0
     while True:
         params['offset'] = offset
-        t_page = time.monotonic()
         resp = requests.get(url, params=params, timeout=timeout)
         resp.raise_for_status()
         data = resp.json().get('data') or []
@@ -159,7 +157,7 @@ def _iter_api_rows(from_iso=None, to_iso=None, timeout=60, max_rows=None, page_p
         del data
         offset += page
         if page_pause:
-            time.sleep(max(page_pause, time.monotonic() - t_page))
+            time.sleep(page_pause)
 
 
 def _fetch_api_rows(from_iso=None, to_iso=None, timeout=60, max_rows=None):

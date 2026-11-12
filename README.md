@@ -76,5 +76,7 @@ older ranges to catch JRs edited or cancelled in iON after they were synced.
 - **All Details** is paged in the database: 500 rows per page (`/api/detail?page=N`).
 - **Excel export** is a background job (`/api/export/start|status|download`): any range,
   one export at a time, run as a systemd unit capped at `CPUQuota=50%`,
-  `MemoryMax=1G`, `Nice=10`, with pauses between API pages. Files live in `exports/`
-  and are deleted after a day. A month (~94k rows) takes ~3 min at ~20% server CPU.
+  `MemoryMax=1G`, `Nice=10`, with a short pause between API pages. The file is written by
+  a small streaming XLSX writer (`dashboard/xlsx_stream.py`, ~10x faster than openpyxl) while
+  the next API page is fetched in parallel. April -> November (~590k rows, 75 MB) builds in
+  ~2 min with jcpl response times unchanged. Files live in `exports/`, deleted after a day.
