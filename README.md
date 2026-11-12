@@ -41,7 +41,12 @@ python3 -m venv .venv && .venv/bin/pip install -r requirements.txt   # first tim
 In production it runs as the systemd unit `dpr-gunicorn` (`systemd/dpr-gunicorn.service`,
 2 workers on `0.0.0.0:8020`), with resource caps from `systemd/dpr-gunicorn-limits.conf`
 (install as `/etc/systemd/system/dpr-gunicorn.service.d/limits.conf`). dpr-api has its
-own caps in `systemd/dpr-api-limits.conf`. Open http://<host>:8020/ ; health: `/healthz`.
+own caps in `systemd/dpr-api-limits.conf`. Health: `/healthz`.
+
+**Public URL: https://dpr.jcplportal.tech** (nginx `nginx/dpr.conf`, installed as
+`/etc/nginx/sites-enabled/zz-dpr` so jcpl stays the default HTTPS site; certificate via
+certbot webroot `/var/www/dpr-acme`, auto-renewed). Use HTTPS: Chrome holds downloads
+from plain-http pages as "Unconfirmed". `http://<host>:8020/` still works directly.
 
 ## Endpoints
 - `GET /`: the dashboard.
