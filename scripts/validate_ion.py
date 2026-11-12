@@ -31,6 +31,20 @@ def dash(path):
         return json.load(r)
 
 
+def dash_detail(iso):
+    """All detail lines for one day (the endpoint is paged; read every page)."""
+    page, rows, headers = 1, [], None
+    while True:
+        det = dash(f'/api/detail?from={iso}&to={iso}&page={page}&page_size=2000')
+        if not det.get('ok'):
+            raise SystemExit(f'dashboard /api/detail failed for {iso}: {det.get("error")}')
+        headers = headers or det['headers']
+        rows += det['rows']
+        if page >= (det.get('pages') or 1):
+            return headers, rows
+        page += 1
+
+
 def num(v):
     n = common.to_num(v)
     return float(n) if n is not None else 0.0
@@ -57,10 +71,8 @@ def check_day(d):
     ion = [r for r in ion if common.to_date(r.get('Direct_JR_Date')) == d]
     i_docs, i_lines, i_once = summarise(ion, lambda r, k: r.get(k))
 
-    det = dash(f'/api/detail?from={iso}&to={iso}')
-    h = det['headers']
+    h, rows = dash_detail(iso)
     idx = {k: h.index(k) for k in h}
-    rows = det['rows']
     d_docs, d_lines, d_once = summarise(rows, lambda r, k: r[idx[k]])
 
     pv = dash(f'/api/data?from={iso}&to={iso}')

@@ -146,8 +146,20 @@ def start_job(from_iso, to_iso):
     """Validate, then launch the export process. Returns (status_code, payload)."""
     EXPORT_DIR.mkdir(parents=True, exist_ok=True)
     cleanup_old()
-    if _lock_held():
-        running = _running_job() or {}
+    # Serialise start requests, and count a just-queued job as busy too: its
+    # process may not have taken the export lock yet.
+    with open(EXPORT_DIR / '.start.lock', 'a+') as start_lock:
+        fcntl.flock(start_lock, fcntl.LOCK_EX)
+        return _start_locked(from_iso, to_iso)
+
+
+def _start_locked(from_iso, to_iso):
+    pending = _running_job()
+    if pending and pending.get('state') == 'queued' and \
+            time.time() - pending.get('updated', 0) > 60:
+        pending = None                               # stale queued job that never started
+    if _lock_held() or pending:
+        running = pending or _running_job() or {}
         return 409, {'ok': False, 'busy': True,
                      'error': 'Another Excel export is being prepared. Please try again '
                               'in a moment.',
