@@ -159,8 +159,101 @@ def _fetch_api_rows(from_iso=None, to_iso=None, timeout=60, max_rows=None):
     return list(_iter_api_rows(from_iso, to_iso, timeout=timeout, max_rows=max_rows))
 
 
+class _AggUnavailable(Exception):
+    """The API has no production aggregate (e.g. older dpr-api)."""
+
+
+def _fetch_production_agg(from_iso, to_iso, timeout=60):
+    """Item x date totals computed inside the database by the dpr-api:
+    GET <DPR_API_URL>/agg/production. Produced qty is taken once per JR there.
+    Returns the list of {date, erp_code, finished_item_code, produced_qty, jr_count}.
+    """
+    url = settings.DPR_API_URL.rstrip('/') + '/agg/production'
+    params = {'api_key': settings.DPR_API_KEY}
+    if from_iso:
+        params['fromDate'] = _ddmmyyyy(from_iso)
+    if to_iso:
+        params['toDate'] = _ddmmyyyy(to_iso)
+    resp = requests.get(url, params=params, timeout=timeout)
+    if resp.status_code == 404:
+        raise _AggUnavailable(resp.text[:200])
+    resp.raise_for_status()
+    return resp.json().get('data') or []
+
+
 def read_dpr_rows(from_iso=None, to_iso=None, timeout=30):
-    """Read the DPR tab and return an item x date pivot for [from_iso, to_iso].
+    """Return the item x date pivot for [from_iso, to_iso] (ISO dates or None).
+
+    The totals are computed in the database (dpr-api /agg/production), so any
+    range - a day or several years - is one small, fast response (~11k rows for
+    April->today in ~1 s). Output shape is unchanged:
+      {"ok", "has_dates", "dates", "items": [{"erp_code","fg_item_code","by_date","total"}],
+       "daily_totals", "grand_total", "row_count", "columns", "error"}
+    Falls back to aggregating raw lines only if the API has no such aggregate.
+    """
+    if not from_iso and not to_iso:
+        today = date.today()
+        from_iso, to_iso = today.replace(day=1).isoformat(), today.isoformat()
+    try:
+        recs = _fetch_production_agg(from_iso, to_iso, timeout=max(timeout, 60))
+    except _AggUnavailable:
+        log.warning('dpr-api has no /agg/production - falling back to raw lines')
+        return _read_dpr_rows_from_lines(from_iso, to_iso, timeout)
+    except Exception as exc:                        # noqa: BLE001 - surface to UI
+        log.exception('DPR API aggregate fetch failed')
+        return _empty(error=str(exc))
+
+    cols = {'header_row': 0, 'date': 'Direct_JR_Date', 'erp_code': 'Finished_Item_Description',
+            'fg_item_code': 'Finished_Item_Code', 'produced_qty': 'Produced_Quantity',
+            'direct_jr_no': 'Direct_JR_No', 'source': 'dpr-api /agg/production'}
+
+    agg = {}            # erp_code -> {"fg": str, "fg_date": iso, "by_date": {iso: qty}, "total": qty}
+    counted = 0
+    for r in recs:
+        iso = _to_iso(r.get('date'))
+        erp = str(r.get('erp_code') or '').strip().upper()   # same normalisation as before
+        if not iso or not erp:
+            continue
+        if (from_iso and iso < from_iso) or (to_iso and iso > to_iso):
+            continue
+        qty = _num(r.get('produced_qty'))
+        fg = str(r.get('finished_item_code') or '').strip()
+        slot = agg.setdefault(erp, {'fg': '', 'fg_date': '', 'by_date': {}, 'total': 0.0})
+        if fg and (not slot['fg'] or iso < slot['fg_date']):   # FG code of the earliest day
+            slot['fg'], slot['fg_date'] = fg, iso
+        slot['by_date'][iso] = slot['by_date'].get(iso, 0.0) + qty
+        slot['total'] += qty
+        counted += int(r.get('jr_count') or 0)
+
+    dates = sorted({d for v in agg.values() for d in v['by_date']})
+    daily_totals = {d: 0.0 for d in dates}
+    items = []
+    for erp, v in agg.items():
+        for d, q in v['by_date'].items():
+            daily_totals[d] += q
+        items.append({
+            'erp_code': erp,
+            'fg_item_code': v['fg'],
+            'by_date': {d: round(v['by_date'].get(d, 0.0), 3) for d in dates},
+            'total': round(v['total'], 3),
+        })
+    items.sort(key=lambda it: (-it['total'], it['erp_code']))   # heaviest producers first
+
+    return {
+        'ok': True,
+        'has_dates': True,
+        'dates': dates,
+        'items': items,
+        'daily_totals': {d: round(q, 3) for d, q in daily_totals.items()},
+        'grand_total': round(sum(it['total'] for it in items), 3),
+        'row_count': counted,
+        'columns': cols,
+        'error': None,
+    }
+
+
+def _read_dpr_rows_from_lines(from_iso=None, to_iso=None, timeout=30):
+    """Fallback: build the pivot from raw lines (slow on long ranges). Return an item x date pivot for [from_iso, to_iso].
 
     from_iso/to_iso are 'YYYY-MM-DD' or None (no bound on that side).
 
