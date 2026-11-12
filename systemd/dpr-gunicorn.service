@@ -8,8 +8,8 @@ User=root
 WorkingDirectory=/root/jclp_automation_portal/dpr
 ExecStart=/root/jclp_automation_portal/dpr/.venv/bin/gunicorn dpr_portal.wsgi:application \
     --workers 2 \
-    --timeout 360 \
-    --graceful-timeout 360 \
+    --timeout 120 \
+    --graceful-timeout 60 \
     --bind 0.0.0.0:8020 \
     --access-logfile /var/log/dpr-gunicorn-access.log \
     --error-logfile /var/log/dpr-gunicorn-error.log
