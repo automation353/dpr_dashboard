@@ -19,6 +19,7 @@ production by the number of raw materials each JR consumes.
 
 import logging
 import re
+import time
 from datetime import date
 
 import requests
@@ -103,7 +104,7 @@ def _cellstr(v):
     return str(v)
 
 
-def _iter_api_rows(from_iso=None, to_iso=None, timeout=60, max_rows=None):
+def _iter_api_rows(from_iso=None, to_iso=None, timeout=60, max_rows=None, page_pause=0):
     """Stream DPR lines from the database API: yields the header list first,
     then one row list per line, fetching one page (10,000 lines) at a time.
 
@@ -111,6 +112,10 @@ def _iter_api_rows(from_iso=None, to_iso=None, timeout=60, max_rows=None):
     detection, dedupe and pivot are unchanged. Only one page is held in memory
     at a time, so long ranges (e.g. April to today, ~590k lines) stay small.
     With no date range, defaults to month-to-date. Raises on config/HTTP error.
+
+    page_pause > 0 (background export): after each page, rest at least that
+    many seconds and at least as long as the page took, so the API/PostgreSQL
+    side runs at no more than ~half its capacity.
     """
     url = settings.DPR_API_URL
     key = settings.DPR_API_KEY
@@ -131,6 +136,7 @@ def _iter_api_rows(from_iso=None, to_iso=None, timeout=60, max_rows=None):
     headers, seen_ids, offset, n = None, set(), 0, 0
     while True:
         params['offset'] = offset
+        t_page = time.monotonic()
         resp = requests.get(url, params=params, timeout=timeout)
         resp.raise_for_status()
         data = resp.json().get('data') or []
@@ -152,6 +158,8 @@ def _iter_api_rows(from_iso=None, to_iso=None, timeout=60, max_rows=None):
             return
         del data
         offset += page
+        if page_pause:
+            time.sleep(max(page_pause, time.monotonic() - t_page))
 
 
 def _fetch_api_rows(from_iso=None, to_iso=None, timeout=60, max_rows=None):
@@ -487,3 +495,63 @@ def read_dpr_detail(from_iso=None, to_iso=None, timeout=30, max_rows=_MAX_DETAIL
         'truncated': truncated,
         'error': None,
     }
+
+
+DETAIL_PAGE_SIZE = 500
+DETAIL_MAX_PAGE_SIZE = 2000
+
+
+def _api_params(from_iso, to_iso):
+    if not from_iso and not to_iso:
+        today = date.today()
+        from_iso, to_iso = today.replace(day=1).isoformat(), today.isoformat()
+    params = {'api_key': settings.DPR_API_KEY}
+    if from_iso:
+        params['fromDate'] = _ddmmyyyy(from_iso)
+    if to_iso:
+        params['toDate'] = _ddmmyyyy(to_iso)
+    return params
+
+
+def count_dpr_lines(from_iso=None, to_iso=None, timeout=60):
+    """Number of DPR lines in the range (dpr-api /count, computed in the DB)."""
+    resp = requests.get(settings.DPR_API_URL.rstrip('/') + '/count',
+                        params=_api_params(from_iso, to_iso), timeout=timeout)
+    resp.raise_for_status()
+    return int(resp.json().get('count') or 0)
+
+
+def read_dpr_detail_page(from_iso=None, to_iso=None, page=1, page_size=DETAIL_PAGE_SIZE,
+                         timeout=60):
+    """One page of raw DPR lines (all columns) for the All Details table.
+
+    Only `page_size` rows are fetched (the API pages in the database), so any
+    date range is cheap. Rows are ordered by Direct JR date, then id.
+    Returns {"ok", "headers", "rows", "date_col", "row_count", "total",
+             "page", "page_size", "pages", "truncated", "error"}.
+    """
+    page_size = max(1, min(int(page_size or DETAIL_PAGE_SIZE), DETAIL_MAX_PAGE_SIZE))
+    page = max(1, int(page or 1))
+    out = {'ok': False, 'headers': [], 'rows': [], 'date_col': None, 'row_count': 0,
+           'total': 0, 'page': page, 'page_size': page_size, 'pages': 0,
+           'truncated': False, 'error': None}
+    try:
+        total = count_dpr_lines(from_iso, to_iso, timeout=timeout)
+        pages = max(1, -(-total // page_size))
+        page = min(page, pages)
+        params = _api_params(from_iso, to_iso)
+        params.update(limit=page_size, offset=(page - 1) * page_size)
+        resp = requests.get(settings.DPR_API_URL, params=params, timeout=timeout)
+        resp.raise_for_status()
+        data = resp.json().get('data') or []
+    except Exception as exc:                        # noqa: BLE001 - surface to UI
+        log.exception('DPR detail page fetch failed')
+        out['error'] = str(exc)
+        return out
+
+    headers = list(data[0].keys()) if data else []
+    rows = [[_cellstr(rec.get(h)) for h in headers] for rec in data]
+    i_date = _pick([_norm(h) for h in headers], _DATE_KEYS) if headers else None
+    out.update(ok=True, headers=headers, rows=rows, date_col=i_date, row_count=len(rows),
+               total=total, page=page, pages=pages)
+    return out

@@ -143,7 +143,7 @@
       <input type="date" id="to">
     </div>
     <button class="primary" id="refreshBtn">Refresh view</button>
-    <button class="ghost" id="exportBtn" title="Download All Details for the chosen dates as Excel">Export to Excel</button>
+    <button class="ghost" id="exportBtn" title="Prepare and download All Details for the chosen dates as Excel">Export to Excel</button>
     <button class="pull" id="pullBtn" {% if not pull_enabled %}disabled style="display:none"{% endif %}>Pull from iON → Sheet</button>
     <div class="spacer"></div>
     <div class="field" style="align-items:flex-end;">
@@ -167,6 +167,13 @@
 
   <div class="grid-wrap">
     <div id="grid"><div class="empty">Loading…</div></div>
+  </div>
+  <div class="pager" id="pager" style="display:none; margin-top:10px; display:none; gap:8px; align-items:center; flex-wrap:wrap;">
+    <button class="ghost" id="pgFirst">« First</button>
+    <button class="ghost" id="pgPrev">‹ Prev</button>
+    <span class="status" id="pgInfo"></span>
+    <button class="ghost" id="pgNext">Next ›</button>
+    <button class="ghost" id="pgLast">Last »</button>
   </div>
   <div class="hint" id="hint">Produced quantity is counted once per Direct JR (it repeats on every raw-material line). Heaviest producers are listed first.</div>
 </main>
@@ -258,6 +265,20 @@
 
   let viewMode = 'grid';
 
+  const esc = (v) => String(v ?? '').replace(/[&<>"]/g, (c) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+  let detailPage = 1, detailPages = 1;
+
+  function renderPager(data) {
+    const pg = $('pager');
+    if (viewMode !== 'detail' || !data || !data.total) { pg.style.display = 'none'; return; }
+    pg.style.display = 'flex';
+    const a = (data.page - 1) * data.page_size + 1, b = a + data.row_count - 1;
+    $('pgInfo').textContent = `Rows ${a.toLocaleString('en-IN')}–${b.toLocaleString('en-IN')} of ` +
+      `${data.total.toLocaleString('en-IN')} · page ${data.page} of ${data.pages}`;
+    $('pgFirst').disabled = $('pgPrev').disabled = data.page <= 1;
+    $('pgNext').disabled = $('pgLast').disabled = data.page >= data.pages;
+  }
+
   function renderDetail(data) {
     $('tGrand').textContent = '—';
     $('tItems').textContent = '—';
@@ -269,23 +290,26 @@
       return;
     }
     let head = '<thead><tr><th class="item">#</th>';
-    for (const h of headers) head += `<th style="text-align:left">${h}</th>`;
+    for (const h of headers) head += `<th style="text-align:left">${esc(h)}</th>`;
     head += '</tr></thead><tbody>';
     let body = '';
+    const start = ((data.page || 1) - 1) * (data.page_size || rows.length);
     rows.forEach((r, i) => {
-      body += `<tr><td class="item" style="min-width:52px">${i + 1}</td>`;
-      for (const c of r) body += `<td style="text-align:left">${(c ?? '')}</td>`;
+      body += `<tr><td class="item" style="min-width:52px">${(start + i + 1).toLocaleString('en-IN')}</td>`;
+      for (const c of r) body += `<td style="text-align:left">${esc(c)}</td>`;
       body += '</tr>';
     });
     $('grid').innerHTML = `<table>${head}${body}</tbody></table>`;
   }
 
-  async function loadDetail() {
+  async function loadDetail(page) {
+    if (page) detailPage = page;
     setStatus('Loading detail…');
     try {
       const u = new URL(window.location.origin + '/api/detail');
       if (fromEl.value) u.searchParams.set('from', fromEl.value);
       if (toEl.value) u.searchParams.set('to', toEl.value);
+      u.searchParams.set('page', detailPage);
       const r = await fetch(u);
       const data = await r.json();
       if (!r.ok || !data.ok) {
@@ -293,10 +317,11 @@
         setStatus(data.error || ('HTTP ' + r.status), 'err');
         return;
       }
+      detailPage = data.page; detailPages = data.pages;
       renderDetail(data);
-      setStatus(`Showing ${data.row_count.toLocaleString('en-IN')} detail row(s)` +
-                (data.truncated ? ' (truncated)' : '') +
-                (data.date_col == null ? ' — no date column in the sheet yet.' : '.'), 'ok');
+      renderPager(data);
+      setStatus(`${data.total.toLocaleString('en-IN')} detail row(s) in this range — ` +
+                `showing ${data.page_size.toLocaleString('en-IN')} per page.`, 'ok');
     } catch (e) {
       renderEmpty('Network error.');
       setStatus(String(e), 'err');
@@ -401,19 +426,50 @@
 
   function setView(mode) {
     viewMode = mode;
+    detailPage = 1;
+    if (mode !== 'detail') $('pager').style.display = 'none';
     $('segGrid').classList.toggle('active', mode === 'grid');
     $('segDetail').classList.toggle('active', mode === 'detail');
     $('hint').style.display = mode === 'grid' ? '' : 'none';
     loadView();
   }
 
-  refreshBtn.addEventListener('click', loadView);
-  $('exportBtn').addEventListener('click', () => {
-    const u = new URL(window.location.origin + '/api/export.xlsx');
-    if (fromEl.value) u.searchParams.set('from', fromEl.value);
-    if (toEl.value) u.searchParams.set('to', toEl.value);
-    setStatus('Preparing Excel… the download starts when it is ready.', 'ok');
-    window.location.href = u.toString();
+  refreshBtn.addEventListener('click', () => { detailPage = 1; loadView(); });
+  $('pgFirst').addEventListener('click', () => loadDetail(1));
+  $('pgPrev').addEventListener('click', () => loadDetail(Math.max(1, detailPage - 1)));
+  $('pgNext').addEventListener('click', () => loadDetail(Math.min(detailPages, detailPage + 1)));
+  $('pgLast').addEventListener('click', () => loadDetail(detailPages));
+  const exportBtn = $('exportBtn');
+  $('exportBtn').addEventListener('click', async () => {
+    if (!fromEl.value || !toEl.value) { setStatus('Choose both From and To dates to export.', 'err'); return; }
+    exportBtn.disabled = true;
+    try {
+      const r = await fetch('/api/export/start', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ from: fromEl.value, to: toEl.value }),
+      });
+      const job = await r.json();
+      if (!r.ok || !job.ok) { setStatus(job.error || ('HTTP ' + r.status), 'err'); exportBtn.disabled = false; return; }
+      setStatus(`Preparing Excel: 0 of ${job.total.toLocaleString('en-IN')} rows…`, 'ok');
+      while (true) {
+        await sleep(2000);
+        const s = await (await fetch('/api/export/status?id=' + job.id)).json();
+        if (!s.ok) { setStatus(s.error || 'Export status unavailable.', 'err'); break; }
+        if (s.state === 'done') {
+          setStatus(`Excel ready (${s.rows.toLocaleString('en-IN')} rows) — downloading.`, 'ok');
+          window.location.href = '/api/export/download?id=' + job.id;
+          break;
+        }
+        if (s.state === 'error') { setStatus('Export failed: ' + (s.error || 'unknown error'), 'err'); break; }
+        const pct = s.total ? Math.floor(100 * s.rows / s.total) : 0;
+        setStatus(s.state === 'saving' ? 'Preparing Excel: saving file…'
+          : `Preparing Excel: ${s.rows.toLocaleString('en-IN')} of ${s.total.toLocaleString('en-IN')} rows (${pct}%)… you can keep using the dashboard.`, 'ok');
+      }
+    } catch (e) {
+      setStatus(String(e), 'err');
+    } finally {
+      exportBtn.disabled = false;
+    }
   });
   pullBtn.addEventListener('click', pull);
   $('segGrid').addEventListener('click', () => setView('grid'));

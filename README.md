@@ -58,3 +58,12 @@ python3 scripts/validate_ion.py 2026-10-01:2026-11-11   # range, or single dates
 Each day prints `MATCH` or `DIFF` with the reason; exit code is 0 only if all
 days match. The nightly sync re-reads just the last 3 days, so run this over
 older ranges to catch JRs edited or cancelled in iON after they were synced.
+
+## Server-safety design (any date range)
+- **Day-wise view** uses the dpr-api `/agg/production` totals (computed in PostgreSQL):
+  any range, even years, is one ~1 s request.
+- **All Details** is paged in the database: 500 rows per page (`/api/detail?page=N`).
+- **Excel export** is a background job (`/api/export/start|status|download`): max 92 days
+  per file, one export at a time, run as a systemd unit capped at `CPUQuota=50%`,
+  `MemoryMax=1G`, `Nice=10`, with pauses between API pages. Files live in `exports/`
+  and are deleted after a day. A month (~94k rows) takes ~3 min at ~20% server CPU.

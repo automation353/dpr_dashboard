@@ -2,27 +2,23 @@
 
 - index     : render the single-page dashboard.
 - api_data  : read the DPR sheet live and return the date-wise pivot (JSON).
-- api_export: download the All Details rows for the dates as .xlsx.
+- api_export_*: background Excel export of All Details (start/status/download).
 - api_pull  : trigger the n8n DPR pull for a chosen date range, wait, return.
 - healthz   : liveness probe.
 """
 
-import io
 import json
 import logging
 import re
-from datetime import date
 
 import requests
 from django.conf import settings
-from django.http import HttpResponse, JsonResponse
+from django.http import FileResponse, Http404, JsonResponse
 from django.shortcuts import render
 from django.views.decorators.http import require_http_methods
-from openpyxl import Workbook
-from openpyxl.cell import WriteOnlyCell
-from openpyxl.styles import Font
 
-from .sheet_reader import _iter_api_rows, read_dpr_detail, read_dpr_rows
+from . import exporter
+from .sheet_reader import DETAIL_PAGE_SIZE, read_dpr_detail_page, read_dpr_rows
 
 log = logging.getLogger(__name__)
 
@@ -61,91 +57,65 @@ def api_data(request):
 
 
 def api_detail(request):
-    """All columns, raw rows, for the 'all the data visible' detail table."""
-    from_iso = _iso(request.GET.get('from'))
-    to_iso = _iso(request.GET.get('to'))
-    data = read_dpr_detail(from_iso=from_iso or None, to_iso=to_iso or None)
-    status = 200 if data.get('ok') else 502
-    return JsonResponse(data, status=status)
+    """One page of raw rows (all columns) for the All Details table.
 
-
-# One export file covers at most this many days (~3 months, ~300k lines), so a
-# single download can't tie up the server for long or grow without limit.
-_EXPORT_MAX_DAYS = 92
-_PLAIN_NUMBER = re.compile(r'^-?(0|[1-9]\d*)(\.\d+)?$')   # no leading zeros, no exponent
-_ISO_DATE = re.compile(r'^\d{4}-\d{2}-\d{2}$')
-
-
-def _xl_value(v):
-    """Detail cell (string) -> Excel value: real numbers/dates, codes stay text."""
-    t = str(v)
-    if _PLAIN_NUMBER.match(t):
-        return float(t) if '.' in t else int(t)
-    if _ISO_DATE.match(t):
-        try:
-            return date.fromisoformat(t)
-        except ValueError:
-            return t
-    return t
-
-
-def api_export(request):
-    """Download the All Details rows for the chosen dates as an .xlsx file.
-
-    Streams the API page by page straight into a write-only workbook, so
-    memory stays small; the range is limited to _EXPORT_MAX_DAYS per file.
+    ?from&to&page=1&page_size=500 - only that page is read from the database,
+    so any date range is fast and light.
     """
     from_iso = _iso(request.GET.get('from'))
     to_iso = _iso(request.GET.get('to'))
+    try:
+        page = int(request.GET.get('page') or 1)
+        size = int(request.GET.get('page_size') or DETAIL_PAGE_SIZE)
+    except ValueError:
+        return JsonResponse({'ok': False, 'error': 'page/page_size must be numbers'}, status=400)
+    data = read_dpr_detail_page(from_iso or None, to_iso or None, page=page, page_size=size)
+    return JsonResponse(data, status=200 if data.get('ok') else 502)
+
+
+def _range(request_dict):
+    from_iso = _iso(request_dict.get('from'))
+    to_iso = _iso(request_dict.get('to'))
+    if from_iso and to_iso and from_iso > to_iso:
+        from_iso, to_iso = to_iso, from_iso
+    return from_iso, to_iso
+
+
+@require_http_methods(['POST'])
+def api_export_start(request):
+    """Start a background Excel export of All Details. Body: {"from","to"}.
+    202 {id,total} | 409 busy (another export running) | 400 bad range."""
+    try:
+        body = json.loads(request.body or b'{}')
+    except ValueError:
+        body = {}
+    from_iso, to_iso = _range(body)
     if not from_iso or not to_iso:
         return JsonResponse({'ok': False, 'error': 'choose both From and To dates to export'},
                             status=400)
-    if from_iso > to_iso:
-        from_iso, to_iso = to_iso, from_iso
-    days = (date.fromisoformat(to_iso) - date.fromisoformat(from_iso)).days + 1
-    if days > _EXPORT_MAX_DAYS:
-        return HttpResponse(
-            f'<p style="font-family:sans-serif">Export is limited to {_EXPORT_MAX_DAYS} days '
-            f'per file (you chose {days}). Please export in parts, e.g. one quarter at a time. '
-            f'<a href="/">Back to dashboard</a></p>', status=400)
-
-    wb = Workbook(write_only=True)
-    ws = wb.create_sheet('All details')
-    ws.freeze_panes = 'A2'
-    bold = Font(bold=True)
     try:
-        stream = _iter_api_rows(from_iso, to_iso)
-        header = next(stream, None)
-        if header is not None:
-            cells = []
-            for h in header:
-                c = WriteOnlyCell(ws, value=h)
-                c.font = bold
-                cells.append(c)
-            ws.append(cells)
-            for row in stream:
-                out = []
-                for v in row:
-                    val = _xl_value(v)
-                    if isinstance(val, date):
-                        c = WriteOnlyCell(ws, value=val)
-                        c.number_format = 'DD-MM-YYYY'
-                        out.append(c)
-                    else:
-                        out.append(val)
-                ws.append(out)
+        code, payload = exporter.start_job(from_iso, to_iso)
     except Exception as exc:                        # noqa: BLE001
-        log.exception('DPR export failed')
+        log.exception('could not start export')
         return JsonResponse({'ok': False, 'error': str(exc)}, status=502)
+    return JsonResponse(payload, status=code)
 
-    buf = io.BytesIO()
-    wb.save(buf)
-    name = f'DPR_all_details_{from_iso}_to_{to_iso}.xlsx'
-    resp = HttpResponse(
-        buf.getvalue(),
-        content_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
-    resp['Content-Disposition'] = f'attachment; filename="{name}"'
-    return resp
+
+def api_export_status(request):
+    meta = exporter.job_status(request.GET.get('id'))
+    if not meta:
+        return JsonResponse({'ok': False, 'error': 'unknown export'}, status=404)
+    return JsonResponse({'ok': True, **{k: meta.get(k) for k in
+                         ('id', 'state', 'rows', 'total', 'from', 'to', 'name', 'size', 'error')}})
+
+
+def api_export_download(request):
+    job_id = request.GET.get('id')
+    meta = exporter.job_status(job_id)
+    if not meta or meta.get('state') != 'done' or not exporter.file_path(job_id).exists():
+        raise Http404('export not ready or expired')
+    return FileResponse(open(exporter.file_path(job_id), 'rb'), as_attachment=True,
+                        filename=meta.get('name') or 'DPR_all_details.xlsx')
 
 
 @require_http_methods(['POST'])
