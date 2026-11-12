@@ -18,7 +18,7 @@ Today's data shows up after that evening's sync.
 ## What it shows
 - **Day-wise**: an item x date grid of produced quantity with daily and grand totals.
 - **All Details**: every raw line with all columns, 500 rows per page.
-- **Export to Excel**: All Details for the chosen range (up to 92 days) as an `.xlsx`.
+- **Export to Excel**: All Details for any chosen range as one `.xlsx` (more than 1,000,000 rows continue on extra sheets).
 
 ## Configuration (shared `/root/.env`, namespaced `JCLP_DPR_*`)
 | Key | Meaning |
@@ -74,7 +74,7 @@ older ranges to catch JRs edited or cancelled in iON after they were synced.
 - **Day-wise view** uses the dpr-api `/agg/production` totals (computed in PostgreSQL):
   any range, even years, is one ~1 s request.
 - **All Details** is paged in the database: 500 rows per page (`/api/detail?page=N`).
-- **Excel export** is a background job (`/api/export/start|status|download`): max 92 days
-  per file, one export at a time, run as a systemd unit capped at `CPUQuota=50%`,
+- **Excel export** is a background job (`/api/export/start|status|download`): any range,
+  one export at a time, run as a systemd unit capped at `CPUQuota=50%`,
   `MemoryMax=1G`, `Nice=10`, with pauses between API pages. Files live in `exports/`
   and are deleted after a day. A month (~94k rows) takes ~3 min at ~20% server CPU.

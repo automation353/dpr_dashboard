@@ -15,7 +15,8 @@ Server protection (this box has 2 CPU cores shared with other apps):
   * the export runs as its own systemd unit with CPUQuota=50% (at most half of
     one core), MemoryMax=1G and Nice=10, so it can never take over the server;
   * it pauses between API pages so the dpr-api / PostgreSQL side stays light;
-  * one file covers at most MAX_DAYS (3 months);
+  * any date range is allowed; ranges with more rows than one Excel sheet holds
+    continue on extra sheets (All details (2), (3), ...);
   * only ONE export runs at a time (an exclusive lock file); a second request
     gets "busy" with the running job's progress. Files older than a day are deleted.
 """
@@ -45,10 +46,9 @@ log = logging.getLogger(__name__)
 
 EXPORT_DIR = Path(getattr(settings, 'DPR_EXPORT_DIR', settings.BASE_DIR / 'exports'))
 LOCK_FILE = EXPORT_DIR / '.export.lock'
-EXCEL_MAX_ROWS = 1_048_575          # Excel sheet limit minus the header row
+SHEET_MAX_ROWS = 1_000_000          # data rows per sheet (Excel's limit is 1,048,575)
 KEEP_SECONDS = 24 * 3600            # finished files are kept for a day
 MEMORY_CAP = 1536 * 1024 * 1024     # address-space cap (fallback when systemd-run is missing)
-MAX_DAYS = 92                       # one export file covers at most ~3 months
 CPU_QUOTA = '50%'                   # of ONE core, for the whole export unit
 MEMORY_MAX = '1G'
 PAGE_PAUSE_MIN = 0.5                # seconds to rest between API pages (at least)
@@ -168,21 +168,9 @@ def _start_locked(from_iso, to_iso):
                               'in a moment.',
                      'running': {k: running.get(k) for k in ('from', 'to', 'rows', 'total')}}
 
-    days = (date.fromisoformat(to_iso) - date.fromisoformat(from_iso)).days + 1
-    if days > MAX_DAYS:
-        return 400, {'ok': False,
-                     'error': f'Excel export is limited to {MAX_DAYS} days (about 3 months) per '
-                              f'file; you chose {days} days. Please export in parts, '
-                              f'e.g. one quarter at a time.'}
-
     total = count_dpr_lines(from_iso, to_iso)
     if total == 0:
         return 400, {'ok': False, 'error': 'No rows in this date range.'}
-    if total > EXCEL_MAX_ROWS:
-        return 400, {'ok': False,
-                     'error': f'{total:,} rows is more than one Excel sheet can hold '
-                              f'({EXCEL_MAX_ROWS:,}). Please export a shorter range.'}
-
     job_id = uuid.uuid4().hex
     name = f'DPR_all_details_{from_iso}_to_{to_iso}.xlsx'
     _write_meta(job_id, id=job_id, state='queued', **{'from': from_iso, 'to': to_iso},
@@ -247,23 +235,32 @@ def run_job(job_id):
 def _write(job_id, meta):
     _write_meta(job_id, state='running', started=time.time())
     wb = Workbook(write_only=True)
-    ws = wb.create_sheet('All details')
-    ws.freeze_panes = 'A2'
     bold = Font(bold=True)
-    n = 0
-    stream = _iter_api_rows(meta['from'], meta['to'], max_rows=EXCEL_MAX_ROWS,
-                            page_pause=PAGE_PAUSE_MIN)
+    stream = _iter_api_rows(meta['from'], meta['to'], page_pause=PAGE_PAUSE_MIN)
     header = next(stream, None)
-    if header is not None:
+    n = 0
+    if header is None:
+        wb.create_sheet('All details')
+    else:
         keep = [i for i, h in enumerate(header) if h not in EXPORT_SKIP_COLUMNS]
         header = [header[i] for i in keep]
-        cells = []
-        for h in header:
-            c = WriteOnlyCell(ws, value=h)
-            c.font = bold
-            cells.append(c)
-        ws.append(cells)
+
+        def new_sheet(number):
+            ws = wb.create_sheet('All details' if number == 1 else f'All details ({number})')
+            ws.freeze_panes = 'A2'
+            cells = []
+            for h in header:
+                c = WriteOnlyCell(ws, value=h)
+                c.font = bold
+                cells.append(c)
+            ws.append(cells)
+            return ws
+
+        sheet_no, ws, on_sheet = 1, new_sheet(1), 0
         for row in stream:
+            if on_sheet >= SHEET_MAX_ROWS:              # sheet full: continue on the next one
+                sheet_no += 1
+                ws, on_sheet = new_sheet(sheet_no), 0
             out = []
             for i in keep:
                 val = _xl_value(row[i])
@@ -275,6 +272,7 @@ def _write(job_id, meta):
                     out.append(val)
             ws.append(out)
             n += 1
+            on_sheet += 1
             if n % 5000 == 0:
                 _write_meta(job_id, rows=n)
     _write_meta(job_id, rows=n, state='saving')
