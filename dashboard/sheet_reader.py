@@ -103,14 +103,14 @@ def _cellstr(v):
     return str(v)
 
 
-def _fetch_api_rows(from_iso=None, to_iso=None, timeout=60, max_rows=None):
-    """Fetch DPR lines from the database API as a table: [headers, row, row, ...].
+def _iter_api_rows(from_iso=None, to_iso=None, timeout=60, max_rows=None):
+    """Stream DPR lines from the database API: yields the header list first,
+    then one row list per line, fetching one page (10,000 lines) at a time.
 
-    Returns the same shape csv.reader gave for the sheet, so everything
-    downstream (header detection, dedupe, pivot) is unchanged. Pages through
-    the API (limit/offset) until a page comes back short. With no date range,
-    defaults to month-to-date so a blank filter can't pull the whole table.
-    Raises on config/HTTP error.
+    Rows have the same shape csv.reader gave for the sheet, so header
+    detection, dedupe and pivot are unchanged. Only one page is held in memory
+    at a time, so long ranges (e.g. April to today, ~590k lines) stay small.
+    With no date range, defaults to month-to-date. Raises on config/HTTP error.
     """
     url = settings.DPR_API_URL
     key = settings.DPR_API_KEY
@@ -128,13 +128,13 @@ def _fetch_api_rows(from_iso=None, to_iso=None, timeout=60, max_rows=None):
     if to_iso:
         params['toDate'] = _ddmmyyyy(to_iso)
 
-    headers, rows, seen_ids, offset = None, [], set(), 0
+    headers, seen_ids, offset, n = None, set(), 0, 0
     while True:
         params['offset'] = offset
         resp = requests.get(url, params=params, timeout=timeout)
         resp.raise_for_status()
-        body = resp.json()
-        data = body.get('data') or []
+        data = resp.json().get('data') or []
+        del resp
         for rec in data:
             rid = rec.get('id')
             if rid is not None:
@@ -143,12 +143,20 @@ def _fetch_api_rows(from_iso=None, to_iso=None, timeout=60, max_rows=None):
                 seen_ids.add(rid)
             if headers is None:
                 headers = list(rec.keys())
-            rows.append([_cellstr(rec.get(h)) for h in headers])
-        if len(data) < page or (max_rows and len(rows) >= max_rows):
-            break
+                yield headers
+            yield [_cellstr(rec.get(h)) for h in headers]
+            n += 1
+            if max_rows and n >= max_rows:
+                return
+        if len(data) < page:
+            return
+        del data
         offset += page
 
-    return [headers] + rows if headers else []
+
+def _fetch_api_rows(from_iso=None, to_iso=None, timeout=60, max_rows=None):
+    """Like _iter_api_rows but as a list [headers, row, ...] (for capped reads)."""
+    return list(_iter_api_rows(from_iso, to_iso, timeout=timeout, max_rows=max_rows))
 
 
 def read_dpr_rows(from_iso=None, to_iso=None, timeout=30):
@@ -168,14 +176,27 @@ def read_dpr_rows(from_iso=None, to_iso=None, timeout=30):
         "error": str|None,
       }
     """
+    # Stream page by page: only the header is kept as a "row"; data rows are
+    # aggregated as they arrive and then dropped (memory stays flat).
+    stream = _iter_api_rows(from_iso, to_iso, timeout=max(timeout, 60))
     try:
-        rows = _fetch_api_rows(from_iso, to_iso, timeout=max(timeout, 60))
+        header = next(stream, None)
     except Exception as exc:                        # noqa: BLE001 - surface to UI
         log.exception('DPR API fetch failed')
         return _empty(error=str(exc))
 
-    if not rows:
+    if header is None:
         return _empty()   # no DPR lines in this date range
+    rows = [header]
+
+    fetch_error = []
+
+    def data_rows():
+        try:
+            yield from stream
+        except Exception as exc:                    # noqa: BLE001 - a later page failed
+            log.exception('DPR API fetch failed')
+            fetch_error.append(str(exc))
 
     # Find the header row: the row (scanning the top) that matches the most of
     # our known logical columns. A raw dump usually has the header on row 0, but
@@ -226,7 +247,7 @@ def read_dpr_rows(from_iso=None, to_iso=None, timeout=30):
     seen_jr = set()
     counted = 0
 
-    for r in rows[hdr_idx + 1:]:
+    for r in data_rows():
         iso = _to_iso(cell(r, i_date)) if has_dates else None
         if has_dates:
             if not iso:
@@ -255,6 +276,9 @@ def read_dpr_rows(from_iso=None, to_iso=None, timeout=30):
         if iso:
             slot['by_date'][iso] = slot['by_date'].get(iso, 0.0) + qty
         counted += 1
+
+    if fetch_error:
+        return _empty(error=fetch_error[0], columns=cols)
 
     # Shape the output.
     date_set = set()

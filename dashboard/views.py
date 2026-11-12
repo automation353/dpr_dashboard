@@ -22,7 +22,7 @@ from openpyxl import Workbook
 from openpyxl.cell import WriteOnlyCell
 from openpyxl.styles import Font
 
-from .sheet_reader import read_dpr_detail, read_dpr_rows
+from .sheet_reader import _iter_api_rows, read_dpr_detail, read_dpr_rows
 
 log = logging.getLogger(__name__)
 
@@ -69,8 +69,9 @@ def api_detail(request):
     return JsonResponse(data, status=status)
 
 
-# Excel's sheet limit is 1,048,576 rows; a full month of DPR lines is ~100k.
-_EXPORT_MAX_ROWS = 500000
+# One export file covers at most this many days (~3 months, ~300k lines), so a
+# single download can't tie up the server for long or grow without limit.
+_EXPORT_MAX_DAYS = 92
 _PLAIN_NUMBER = re.compile(r'^-?(0|[1-9]\d*)(\.\d+)?$')   # no leading zeros, no exponent
 _ISO_DATE = re.compile(r'^\d{4}-\d{2}-\d{2}$')
 
@@ -89,45 +90,61 @@ def _xl_value(v):
 
 
 def api_export(request):
-    """Download the All Details table for the chosen dates as an .xlsx file."""
+    """Download the All Details rows for the chosen dates as an .xlsx file.
+
+    Streams the API page by page straight into a write-only workbook, so
+    memory stays small; the range is limited to _EXPORT_MAX_DAYS per file.
+    """
     from_iso = _iso(request.GET.get('from'))
     to_iso = _iso(request.GET.get('to'))
-    data = read_dpr_detail(from_iso=from_iso or None, to_iso=to_iso or None,
-                           max_rows=_EXPORT_MAX_ROWS)
-    if not data.get('ok'):
-        return JsonResponse(data, status=502)
+    if not from_iso or not to_iso:
+        return JsonResponse({'ok': False, 'error': 'choose both From and To dates to export'},
+                            status=400)
+    if from_iso > to_iso:
+        from_iso, to_iso = to_iso, from_iso
+    days = (date.fromisoformat(to_iso) - date.fromisoformat(from_iso)).days + 1
+    if days > _EXPORT_MAX_DAYS:
+        return HttpResponse(
+            f'<p style="font-family:sans-serif">Export is limited to {_EXPORT_MAX_DAYS} days '
+            f'per file (you chose {days}). Please export in parts, e.g. one quarter at a time. '
+            f'<a href="/">Back to dashboard</a></p>', status=400)
 
     wb = Workbook(write_only=True)
     ws = wb.create_sheet('All details')
-    bold = Font(bold=True)
-    header = []
-    for h in data['headers']:
-        c = WriteOnlyCell(ws, value=h)
-        c.font = bold
-        header.append(c)
     ws.freeze_panes = 'A2'
-    ws.append(header)
-    for row in data['rows']:
-        out = []
-        for i, v in enumerate(row):
-            val = _xl_value(v)
-            if isinstance(val, date):
-                c = WriteOnlyCell(ws, value=val)
-                c.number_format = 'DD-MM-YYYY'
-                out.append(c)
-            else:
-                out.append(val)
-        ws.append(out)
+    bold = Font(bold=True)
+    try:
+        stream = _iter_api_rows(from_iso, to_iso)
+        header = next(stream, None)
+        if header is not None:
+            cells = []
+            for h in header:
+                c = WriteOnlyCell(ws, value=h)
+                c.font = bold
+                cells.append(c)
+            ws.append(cells)
+            for row in stream:
+                out = []
+                for v in row:
+                    val = _xl_value(v)
+                    if isinstance(val, date):
+                        c = WriteOnlyCell(ws, value=val)
+                        c.number_format = 'DD-MM-YYYY'
+                        out.append(c)
+                    else:
+                        out.append(val)
+                ws.append(out)
+    except Exception as exc:                        # noqa: BLE001
+        log.exception('DPR export failed')
+        return JsonResponse({'ok': False, 'error': str(exc)}, status=502)
 
     buf = io.BytesIO()
     wb.save(buf)
-    name = f'DPR_all_details_{from_iso or "start"}_to_{to_iso or "end"}.xlsx'
+    name = f'DPR_all_details_{from_iso}_to_{to_iso}.xlsx'
     resp = HttpResponse(
         buf.getvalue(),
         content_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
     resp['Content-Disposition'] = f'attachment; filename="{name}"'
-    if data.get('truncated'):
-        resp['X-DPR-Truncated'] = f'first {_EXPORT_MAX_ROWS} rows'
     return resp
 
 
