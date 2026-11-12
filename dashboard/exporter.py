@@ -52,6 +52,9 @@ MAX_DAYS = 92                       # one export file covers at most ~3 months
 CPU_QUOTA = '50%'                   # of ONE core, for the whole export unit
 MEMORY_MAX = '1G'
 PAGE_PAUSE_MIN = 0.5                # seconds to rest between API pages (at least)
+# Internal database columns: no business meaning, and row_hash/fetched_at are
+# near-random text that barely compresses (they were ~25% of a 36 MB file).
+EXPORT_SKIP_COLUMNS = {'id', 'row_hash', 'fetched_at'}
 _JOB_ID = re.compile(r'^[0-9a-f]{32}$')
 
 _PLAIN_NUMBER = re.compile(r'^-?(0|[1-9]\d*)(\.\d+)?$')   # no leading zeros, no exponent
@@ -252,6 +255,8 @@ def _write(job_id, meta):
                             page_pause=PAGE_PAUSE_MIN)
     header = next(stream, None)
     if header is not None:
+        keep = [i for i, h in enumerate(header) if h not in EXPORT_SKIP_COLUMNS]
+        header = [header[i] for i in keep]
         cells = []
         for h in header:
             c = WriteOnlyCell(ws, value=h)
@@ -260,8 +265,8 @@ def _write(job_id, meta):
         ws.append(cells)
         for row in stream:
             out = []
-            for v in row:
-                val = _xl_value(v)
+            for i in keep:
+                val = _xl_value(row[i])
                 if isinstance(val, date):
                     c = WriteOnlyCell(ws, value=val)
                     c.number_format = 'DD-MM-YYYY'
