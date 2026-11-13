@@ -54,7 +54,9 @@ from plain-http pages as "Unconfirmed". `http://<host>:8020/` still works direct
 - `GET /api/detail?from&to&page=1&page_size=500`: one page of raw lines (max 2000 per page).
 - `POST /api/export/start` with body `{"from","to"}`: starts an Excel export and returns `{id,total}`.
   It returns 409 if another export is running, or 400 for a bad or too-long range.
-- `GET /api/export/status?id=...`: progress (`queued|running|saving|done|error`).
+- `GET /api/export/status?id=...`: progress (`queued|running|saving|done|error|cancelled`).
+- `POST /api/export/cancel` with body `{"id"}`: stops a queued or running export (the page's
+  *Cancel export* button); the job stops within ~1 s and its partial file is deleted.
 - `GET /api/export/download?id=...`: the finished `.xlsx`.
 - `POST /api/pull`: disabled (the old n8n pull); returns 503.
 

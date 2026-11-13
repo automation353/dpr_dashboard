@@ -88,6 +88,19 @@ def file_path(job_id):
     return EXPORT_DIR / f'{job_id}.xlsx'
 
 
+def _part_path(job_id):
+    return EXPORT_DIR / f'{job_id}.xlsx.part'
+
+
+def _cancel_path(job_id):
+    # a separate flag file, so the job's own progress writes can't overwrite it
+    return EXPORT_DIR / f'{job_id}.cancel'
+
+
+class _Cancelled(Exception):
+    pass
+
+
 def _write_meta(job_id, **fields):
     p = _meta_path(job_id)
     meta = json.loads(p.read_text()) if p.exists() else {}
@@ -143,6 +156,18 @@ def cleanup_old():
                 p.unlink()
         except FileNotFoundError:
             pass
+
+
+def cancel_job(job_id):
+    """Ask an export to stop. The running process checks about once a second,
+    stops and deletes its partial file. Returns the job's meta (or None)."""
+    meta = job_status(job_id)
+    if not meta or meta.get('state') not in ('queued', 'running', 'saving'):
+        return meta
+    _cancel_path(job_id).touch()
+    if not _lock_held():                     # not started yet: nothing to stop
+        return _write_meta(job_id, state='cancelled', error=None)
+    return {**meta, 'state': 'cancelling'}
 
 
 # ---------------------------------------------------------------- start
@@ -223,14 +248,25 @@ def run_job(job_id):
             _write_meta(job_id, state='error', error='Another export is running; try again.')
             return
         try:
+            if _cancel_path(job_id).exists():
+                raise _Cancelled
             _write(job_id, meta)
+        except _Cancelled:
+            log.info('export %s cancelled', job_id)
+            _write_meta(job_id, state='cancelled', error=None)
+            _remove_partial(job_id)
         except Exception as exc:                    # noqa: BLE001
             log.exception('export %s failed', job_id)
             _write_meta(job_id, state='error', error=str(exc)[:500])
-            try:
-                file_path(job_id).unlink()
-            except FileNotFoundError:
-                pass
+            _remove_partial(job_id)
+
+
+def _remove_partial(job_id):
+    for p in (_part_path(job_id), file_path(job_id)):
+        try:
+            p.unlink()
+        except FileNotFoundError:
+            pass
 
 
 _DONE = object()
@@ -268,7 +304,8 @@ def _prefetch(stream, chunk=2000, depth=8):
 def _write(job_id, meta):
     _write_meta(job_id, state='running', started=time.time())
     stream = _prefetch(_iter_api_rows(meta['from'], meta['to'], page_pause=PAGE_PAUSE))
-    tmp = EXPORT_DIR / f'{job_id}.xlsx.part'
+    tmp = _part_path(job_id)
+    cancel_flag = _cancel_path(job_id)
     n = 0
     with XlsxStreamWriter(str(tmp)) as xw:
         header = next(stream, None)
@@ -287,8 +324,12 @@ def _write(job_id, meta):
                 xw.write_row([_xl_value(row[i]) for i in keep])
                 n += 1
                 on_sheet += 1
-                if n % 5000 == 0:
+                if n % 5000 == 0:                       # ~once a second
+                    if cancel_flag.exists():
+                        raise _Cancelled
                     _write_meta(job_id, rows=n)
+        if cancel_flag.exists():
+            raise _Cancelled
         _write_meta(job_id, rows=n, state='saving')
     tmp.replace(file_path(job_id))
     _write_meta(job_id, rows=n, state='done', finished=time.time(),

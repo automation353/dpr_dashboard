@@ -2,7 +2,7 @@
 
 - index     : render the single-page dashboard.
 - api_data  : read the DPR sheet live and return the date-wise pivot (JSON).
-- api_export_*: background Excel export of All Details (start/status/download).
+- api_export_*: background Excel export of All Details (start/status/cancel/download).
 - api_pull  : trigger the n8n DPR pull for a chosen date range, wait, return.
 - healthz   : liveness probe.
 """
@@ -107,6 +107,19 @@ def api_export_status(request):
         return JsonResponse({'ok': False, 'error': 'unknown export'}, status=404)
     return JsonResponse({'ok': True, **{k: meta.get(k) for k in
                          ('id', 'state', 'rows', 'total', 'from', 'to', 'name', 'size', 'error')}})
+
+
+@require_http_methods(['POST'])
+def api_export_cancel(request):
+    """Cancel a queued/running export. Body: {"id"}."""
+    try:
+        body = json.loads(request.body or b'{}')
+    except ValueError:
+        body = {}
+    meta = exporter.cancel_job(body.get('id'))
+    if not meta:
+        return JsonResponse({'ok': False, 'error': 'unknown export'}, status=404)
+    return JsonResponse({'ok': True, 'state': meta.get('state')})
 
 
 def api_export_download(request):

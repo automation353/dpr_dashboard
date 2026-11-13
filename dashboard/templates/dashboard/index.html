@@ -144,6 +144,7 @@
     </div>
     <button class="primary" id="refreshBtn">Refresh view</button>
     <button class="ghost" id="exportBtn" title="Prepare and download All Details for the chosen dates as Excel">Export to Excel</button>
+    <button class="ghost" id="cancelExportBtn" style="display:none" title="Stop preparing this Excel file">Cancel export</button>
     <button class="pull" id="pullBtn" {% if not pull_enabled %}disabled style="display:none"{% endif %}>Pull from iON → Sheet</button>
     <div class="spacer"></div>
     <div class="field" style="align-items:flex-end;">
@@ -440,6 +441,20 @@
   $('pgNext').addEventListener('click', () => loadDetail(Math.min(detailPages, detailPage + 1)));
   $('pgLast').addEventListener('click', () => loadDetail(detailPages));
   const exportBtn = $('exportBtn');
+  const cancelExportBtn = $('cancelExportBtn');
+  let exportId = null, exportCancelling = false;
+  cancelExportBtn.addEventListener('click', async () => {
+    if (!exportId) return;
+    exportCancelling = true;
+    cancelExportBtn.disabled = true;
+    setStatus('Cancelling export…', 'ok');
+    try {
+      await fetch('/api/export/cancel', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id: exportId }),
+      });
+    } catch (e) { /* the status poll below reports the outcome */ }
+  });
   $('exportBtn').addEventListener('click', async () => {
     if (!fromEl.value || !toEl.value) { setStatus('Choose both From and To dates to export.', 'err'); return; }
     exportBtn.disabled = true;
@@ -451,6 +466,10 @@
       const job = await r.json();
       if (!r.ok || !job.ok) { setStatus(job.error || ('HTTP ' + r.status), 'err'); exportBtn.disabled = false; return; }
       setStatus(`Preparing Excel: 0 of ${job.total.toLocaleString('en-IN')} rows…`, 'ok');
+      exportId = job.id;
+      exportCancelling = false;
+      cancelExportBtn.disabled = false;
+      cancelExportBtn.style.display = '';
       while (true) {
         await sleep(2000);
         const s = await (await fetch('/api/export/status?id=' + job.id)).json();
@@ -461,6 +480,8 @@
           break;
         }
         if (s.state === 'error') { setStatus('Export failed: ' + (s.error || 'unknown error'), 'err'); break; }
+        if (s.state === 'cancelled') { setStatus('Export cancelled.', 'ok'); break; }
+        if (exportCancelling) { setStatus('Cancelling export…', 'ok'); continue; }
         const pct = s.total ? Math.floor(100 * s.rows / s.total) : 0;
         setStatus(s.state === 'saving' ? 'Preparing Excel: saving file…'
           : `Preparing Excel: ${s.rows.toLocaleString('en-IN')} of ${s.total.toLocaleString('en-IN')} rows (${pct}%)… you can keep using the dashboard.`, 'ok');
@@ -469,6 +490,9 @@
       setStatus(String(e), 'err');
     } finally {
       exportBtn.disabled = false;
+      cancelExportBtn.style.display = 'none';
+      exportId = null;
+      exportCancelling = false;
     }
   });
   pullBtn.addEventListener('click', pull);
