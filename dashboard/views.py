@@ -47,6 +47,11 @@ def _site(value):
     return code if code in settings.DPR_SITES else None
 
 
+def _group(value):
+    """Item group filter: free text from the dropdown ('' = all groups)."""
+    return str(value or '').strip()[:100] or None
+
+
 def index(request):
     return render(request, 'dashboard/index.html', {
         'sites': settings.DPR_SITES,
@@ -59,7 +64,8 @@ def api_data(request):
     from_iso = _iso(request.GET.get('from'))
     to_iso = _iso(request.GET.get('to'))
     site = _site(request.GET.get('site'))
-    data = read_dpr_rows(from_iso=from_iso or None, to_iso=to_iso or None, site=site)
+    data = read_dpr_rows(from_iso=from_iso or None, to_iso=to_iso or None, site=site,
+                         item_group=_group(request.GET.get('group')))
     data['site'] = site or 'ALL'
     status = 200 if data.get('ok') else 502
     return JsonResponse(data, status=status)
@@ -106,7 +112,8 @@ def api_export_start(request):
         return JsonResponse({'ok': False, 'error': 'choose both From and To dates to export'},
                             status=400)
     try:
-        code, payload = exporter.start_job(from_iso, to_iso, site=_site(body.get('site')))
+        code, payload = exporter.start_job(from_iso, to_iso, site=_site(body.get('site')),
+                                          item_group=_group(body.get('group')))
     except Exception as exc:                        # noqa: BLE001
         log.exception('could not start export')
         return JsonResponse({'ok': False, 'error': str(exc)}, status=502)
@@ -118,7 +125,8 @@ def api_export_status(request):
     if not meta:
         return JsonResponse({'ok': False, 'error': 'unknown export'}, status=404)
     return JsonResponse({'ok': True, **{k: meta.get(k) for k in
-                         ('id', 'state', 'rows', 'total', 'from', 'to', 'site', 'name', 'size', 'error')}})
+                         ('id', 'state', 'rows', 'scanned', 'total', 'from', 'to', 'site', 'item_group',
+                          'name', 'size', 'error')}})
 
 
 @require_http_methods(['POST'])

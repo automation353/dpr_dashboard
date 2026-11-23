@@ -149,6 +149,12 @@
         {% for s in sites %}<option value="{{ s }}">{{ s }}</option>{% endfor %}
       </select>
     </div>
+    <div class="field">
+      <label for="group">Item group</label>
+      <select id="group" title="Show one item group, or all groups">
+        <option value="">All item groups</option>
+      </select>
+    </div>
     <button class="primary" id="refreshBtn">Refresh view</button>
     <button class="ghost" id="exportBtn" title="Prepare and download All Details for the chosen dates as Excel">Export to Excel</button>
     <button class="ghost" id="cancelExportBtn" style="display:none" title="Stop preparing this Excel file">Cancel export</button>
@@ -191,7 +197,22 @@
 (function () {
   const $ = (id) => document.getElementById(id);
   const fromEl = $('from'), toEl = $('to'), siteEl = $('site'), statusEl = $('status');
-  const siteLabel = () => siteEl.value || 'all sites';
+  const groupEl = $('group');
+  const siteLabel = () => (siteEl.value || 'all sites') + (groupEl.value ? `, item group ${groupEl.value}` : '');
+  // Item group options come with each day-wise load (the groups produced in that range/site).
+  function fillGroups(list) {
+    const keep = groupEl.value;
+    const opts = ['<option value="">All item groups</option>'];
+    let found = false;
+    for (const g of (list || [])) {
+      if (g.group === keep) found = true;
+      const label = g.description && g.description !== g.group ? `${g.group} — ${g.description}` : g.group;
+      opts.push(`<option value="${esc(g.group)}">${esc(label)} (${g.items} items)</option>`);
+    }
+    if (keep && !found) opts.push(`<option value="${esc(keep)}">${esc(keep)} (no production here)</option>`);
+    groupEl.innerHTML = opts.join('');
+    groupEl.value = keep;
+  }
   const refreshBtn = $('refreshBtn'), pullBtn = $('pullBtn');
 
   const pad = (n) => String(n).padStart(2, '0');
@@ -224,7 +245,7 @@
     $('tItems').textContent = items.length.toLocaleString('en-IN');
     $('tDays').textContent = dates.length.toLocaleString('en-IN');
     $('tRange').textContent = (dates.length ? `${shortDate(dates[0])} – ${shortDate(dates[dates.length - 1])}` : '—')
-      + ` · ${siteEl.value || 'All sites'}`;
+      + ` · ${siteEl.value || 'All sites'}` + (groupEl.value ? ` · ${groupEl.value}` : '');
 
     if (!items.length) {
       renderEmpty('No production rows in this date range.');
@@ -331,8 +352,9 @@
       detailPage = data.page; detailPages = data.pages;
       renderDetail(data);
       renderPager(data);
-      setStatus(`${data.total.toLocaleString('en-IN')} detail row(s) in this range (${siteLabel()}) — ` +
-                `showing ${data.page_size.toLocaleString('en-IN')} per page.`, 'ok');
+      setStatus(`${data.total.toLocaleString('en-IN')} detail row(s) in this range (${siteEl.value || 'all sites'}) — ` +
+                `showing ${data.page_size.toLocaleString('en-IN')} per page.` +
+                (groupEl.value ? ' Item group filter is not applied here yet: All Details shows every group (Day-wise and Excel export are filtered).' : ''), 'ok');
     } catch (e) {
       renderEmpty('Network error.');
       setStatus(String(e), 'err');
@@ -349,6 +371,7 @@
       if (fromEl.value) u.searchParams.set('from', fromEl.value);
       if (toEl.value) u.searchParams.set('to', toEl.value);
       if (siteEl.value) u.searchParams.set('site', siteEl.value);
+      if (groupEl.value) u.searchParams.set('group', groupEl.value);
       const r = await fetch(u);
       const data = await r.json();
       if (!r.ok || !data.ok) {
@@ -356,6 +379,7 @@
         setStatus(data.error || ('HTTP ' + r.status), 'err');
         return;
       }
+      fillGroups(data.item_groups);
       render(data);
       const across = data.has_dates ? ` across ${data.dates.length} day(s)` : ' (month totals — no date column yet)';
       setStatus(data.items.length ? `Loaded ${data.items.length.toLocaleString('en-IN')} items${across} (${siteLabel()}).`
@@ -474,7 +498,7 @@
     try {
       const r = await fetch('/api/export/start', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ from: fromEl.value, to: toEl.value, site: siteEl.value }),
+        body: JSON.stringify({ from: fromEl.value, to: toEl.value, site: siteEl.value, group: groupEl.value }),
       });
       const job = await r.json();
       if (!r.ok || !job.ok) { setStatus(job.error || ('HTTP ' + r.status), 'err'); exportBtn.disabled = false; return; }
@@ -497,7 +521,9 @@
         if (exportCancelling) { setStatus('Cancelling export…', 'ok'); continue; }
         const pct = s.total ? Math.floor(100 * s.rows / s.total) : 0;
         setStatus(s.state === 'saving' ? 'Preparing Excel: saving file…'
-          : `Preparing Excel: ${s.rows.toLocaleString('en-IN')} of ${s.total.toLocaleString('en-IN')} rows (${pct}%)… you can keep using the dashboard.`, 'ok');
+          : s.item_group
+            ? `Preparing Excel (${s.item_group}): checked ${(s.scanned || 0).toLocaleString('en-IN')} of ${s.total.toLocaleString('en-IN')} lines (${Math.floor(100 * (s.scanned || 0) / (s.total || 1))}%), ${s.rows.toLocaleString('en-IN')} in this group… you can keep using the dashboard.`
+            : `Preparing Excel: ${s.rows.toLocaleString('en-IN')} of ${s.total.toLocaleString('en-IN')} rows (${pct}%)… you can keep using the dashboard.`, 'ok');
       }
     } catch (e) {
       setStatus(String(e), 'err');
@@ -510,6 +536,7 @@
   });
   pullBtn.addEventListener('click', pull);
   siteEl.addEventListener('change', () => { detailPage = 1; loadView(); });
+  groupEl.addEventListener('change', () => { detailPage = 1; loadView(); });
   $('segGrid').addEventListener('click', () => setView('grid'));
   $('segDetail').addEventListener('click', () => setView('detail'));
   loadData();

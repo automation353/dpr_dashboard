@@ -171,7 +171,7 @@ def cancel_job(job_id):
 
 
 # ---------------------------------------------------------------- start
-def start_job(from_iso, to_iso, site=None):
+def start_job(from_iso, to_iso, site=None, item_group=None):
     """Validate, then launch the export process. Returns (status_code, payload)."""
     EXPORT_DIR.mkdir(parents=True, exist_ok=True)
     cleanup_old()
@@ -179,10 +179,10 @@ def start_job(from_iso, to_iso, site=None):
     # process may not have taken the export lock yet.
     with open(EXPORT_DIR / '.start.lock', 'a+') as start_lock:
         fcntl.flock(start_lock, fcntl.LOCK_EX)
-        return _start_locked(from_iso, to_iso, site)
+        return _start_locked(from_iso, to_iso, site, item_group)
 
 
-def _start_locked(from_iso, to_iso, site=None):
+def _start_locked(from_iso, to_iso, site=None, item_group=None):
     pending = _running_job()
     if pending and pending.get('state') == 'queued' and \
             time.time() - pending.get('updated', 0) > 60:
@@ -198,8 +198,9 @@ def _start_locked(from_iso, to_iso, site=None):
     if total == 0:
         return 400, {'ok': False, 'error': 'No rows in this date range' + (f' for {site}.' if site else '.')}
     job_id = uuid.uuid4().hex
-    name = f'DPR_all_details_{site or "all_sites"}_{from_iso}_to_{to_iso}.xlsx'
-    _write_meta(job_id, id=job_id, state='queued', **{'from': from_iso, 'to': to_iso}, site=site,
+    group_part = re.sub(r'[^A-Za-z0-9]+', '-', item_group).strip('-') + '_' if item_group else ''
+    name = f'DPR_all_details_{site or "all_sites"}_{group_part}{from_iso}_to_{to_iso}.xlsx'
+    _write_meta(job_id, id=job_id, state='queued', **{'from': from_iso, 'to': to_iso}, site=site, item_group=item_group,
                 total=total, rows=0, name=name, created=time.time(), error=None)
 
     _launch(job_id)
@@ -307,7 +308,7 @@ def _write(job_id, meta):
                                       site=meta.get('site')))
     tmp = _part_path(job_id)
     cancel_flag = _cancel_path(job_id)
-    n = 0
+    n = scanned = 0
     with XlsxStreamWriter(str(tmp)) as xw:
         header = next(stream, None)
         if header is None:
@@ -316,11 +317,22 @@ def _write(job_id, meta):
             # item type / category / group columns, looked up once for the whole range
             info = fetch_item_info(meta['from'], meta['to'], meta.get('site'))
             header, stream = with_item_columns(header, stream, info)
+            want = (meta.get('item_group') or '').strip().upper()
+            g_at = header.index('Item_Group') if want and 'Item_Group' in header else None
+            if want and g_at is None:
+                raise RuntimeError('item group is not available from the data API right now')
             keep = [i for i, h in enumerate(header) if h not in EXPORT_SKIP_COLUMNS]
             header = [header[i] for i in keep]
             sheet_no, on_sheet = 1, 0
             xw.start_sheet('All details', header)
             for row in stream:
+                scanned += 1
+                if scanned % 5000 == 0:                 # ~once a second
+                    if cancel_flag.exists():
+                        raise _Cancelled
+                    _write_meta(job_id, rows=n, scanned=scanned)
+                if g_at is not None and str(row[g_at] or '').strip().upper() != want:
+                    continue                            # other item group
                 if on_sheet >= SHEET_MAX_ROWS:          # sheet full: continue on the next one
                     sheet_no += 1
                     on_sheet = 0
@@ -328,13 +340,12 @@ def _write(job_id, meta):
                 xw.write_row([_xl_value(row[i]) for i in keep])
                 n += 1
                 on_sheet += 1
-                if n % 5000 == 0:                       # ~once a second
-                    if cancel_flag.exists():
-                        raise _Cancelled
-                    _write_meta(job_id, rows=n)
+            if want and n == 0:
+                raise RuntimeError(f"No rows for item group '{meta.get('item_group')}' in this "
+                                   f"date range{' for ' + meta['site'] if meta.get('site') else ''}.")
         if cancel_flag.exists():
             raise _Cancelled
-        _write_meta(job_id, rows=n, state='saving')
+        _write_meta(job_id, rows=n, scanned=scanned, state='saving')
     tmp.replace(file_path(job_id))
     _write_meta(job_id, rows=n, state='done', finished=time.time(),
                 size=file_path(job_id).stat().st_size)
