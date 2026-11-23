@@ -30,6 +30,9 @@ up after that evening's sync. The data project is documented in `/root/database/
 
 ## What it shows
 - **Day-wise**: an item x date grid of produced quantity with daily and grand totals.
+- **Month-wise by group**: produced quantity per item group per month, with item count,
+  monthly totals and grand total (same Site / Item type / Item group filters;
+  `months`, `group_months`, `month_totals` in `/api/data`).
 - **All Details**: every raw line with all columns, 500 rows per page, plus four item
   columns after the ERP code: `Item_Type`, `Item_Category`, `Item_Group`,
   `Item_Group_Description`. iON's Direct JR report has no item group; the data API looks

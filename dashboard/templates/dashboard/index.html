@@ -181,6 +181,7 @@
 
   <div class="switch">
     <button class="seg active" id="segGrid" data-view="grid">Day-wise quantity</button>
+    <button class="seg" id="segMonths" data-view="months">Month-wise by group</button>
     <button class="seg" id="segDetail" data-view="detail">All detail</button>
     <span class="switch-note" id="switchNote"></span>
   </div>
@@ -286,6 +287,38 @@
       kpiKey = key; kpiData = data;
       if (viewMode === 'detail' && key === `${fromEl.value}|${toEl.value}|${siteEl.value}`) setTiles(data, false);
     } catch (e) { /* tiles are extra; the table is what matters */ }
+  }
+
+  const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+  const monthLabel = (ym) => { const [y, m] = ym.split('-'); return `${MONTHS[+m - 1]} ${y}`; };
+
+  // Month-wise by item group: produced qty per group per month (same filters as day-wise).
+  function renderMonths(data) {
+    setTiles(data, true);
+    const { months, group_months, month_totals, grand_total } = data;
+    if (!group_months || !group_months.length) {
+      renderEmpty('No production rows in this date range.');
+      return;
+    }
+    let head = '<thead><tr><th class="item">Item group</th><th>Items</th>';
+    for (const m of months) head += `<th title="${m}">${monthLabel(m)}</th>`;
+    head += '<th class="tot">Total</th></tr></thead>';
+    let body = '<tbody>';
+    for (const g of group_months) {
+      const desc = g.description && g.description !== g.group ? `<div class="fg">${esc(g.description)}</div>` : '';
+      body += `<tr><td class="item"><div class="erp">${esc(g.group)}</div>${desc}</td>` +
+              `<td class="num">${g.items.toLocaleString('en-IN')}</td>`;
+      for (const m of months) {
+        const q = g.by_month[m] || 0;
+        body += `<td class="num${q ? '' : ' zero'}">${q ? fmtNum(q) : '·'}</td>`;
+      }
+      body += `<td class="num tot">${fmtNum(g.total)}</td></tr>`;
+    }
+    body += '</tbody>';
+    let foot = '<tfoot><tr><td class="item">Monthly total</td><td class="num"></td>';
+    for (const m of months) foot += `<td class="num">${fmtNum(month_totals[m] || 0)}</td>`;
+    foot += `<td class="num tot">${fmtNum(grand_total)}</td></tr></tfoot>`;
+    $('grid').innerHTML = `<table>${head}${body}${foot}</table>`;
   }
 
   function render(data) {
@@ -425,7 +458,7 @@
       }
       fillTypes(data.item_types);
       fillGroups(data.item_groups);
-      render(data);
+      if (viewMode === 'months') renderMonths(data); else render(data);
       const across = data.has_dates ? ` across ${data.dates.length} day(s)` : ' (month totals — no date column yet)';
       setStatus(data.items.length ? `Loaded ${data.items.length.toLocaleString('en-IN')} items${across} (${siteLabel()}).`
                                   : `No production in this range for ${siteLabel()}.`, 'ok');
@@ -513,7 +546,11 @@
     if (mode !== 'detail') $('pager').style.display = 'none';
     $('segGrid').classList.toggle('active', mode === 'grid');
     $('segDetail').classList.toggle('active', mode === 'detail');
-    $('hint').style.display = mode === 'grid' ? '' : 'none';
+    $('segMonths').classList.toggle('active', mode === 'months');
+    $('hint').style.display = mode === 'detail' ? 'none' : '';
+    $('hint').textContent = mode === 'months'
+      ? 'Produced quantity per item group per month (counted once per Direct JR). Largest groups first; use Site / Item type / Item group to narrow it.'
+      : 'Produced quantity is counted once per Direct JR (it repeats on every raw-material line). Heaviest producers are listed first.';
     loadView();
   }
 
@@ -586,6 +623,7 @@
   typeEl.addEventListener('change', () => { detailPage = 1; groupEl.value = ''; loadView(); });
   $('segGrid').addEventListener('click', () => setView('grid'));
   $('segDetail').addEventListener('click', () => setView('detail'));
+  $('segMonths').addEventListener('click', () => setView('months'));
   loadData();
 })();
 </script>

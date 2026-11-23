@@ -248,6 +248,7 @@ def read_dpr_rows(from_iso=None, to_iso=None, timeout=30, site=None, item_group=
     groups = {}         # item group -> {"description", "items": set(), "total"} (after the type filter)
     want = (item_group or '').strip().upper()
     want_type = (item_type or '').strip().upper()
+    group_months = {}   # item group -> {"description", "items", "by_month": {YYYY-MM: qty}, "total"}
     for r in recs:
         iso = _to_iso(r.get('date'))
         erp = str(r.get('erp_code') or '').strip().upper()   # same normalisation as before
@@ -269,6 +270,12 @@ def read_dpr_rows(from_iso=None, to_iso=None, timeout=30, site=None, item_group=
         g['total'] += qty
         if want and grp.upper() != want:
             continue
+        gm = group_months.setdefault(grp or '(no group)', {
+            'description': str(r.get('item_group_description') or '').strip(),
+            'items': set(), 'by_month': {}, 'total': 0.0})
+        gm['items'].add(erp)
+        gm['by_month'][iso[:7]] = gm['by_month'].get(iso[:7], 0.0) + qty
+        gm['total'] += qty
         fg = str(r.get('finished_item_code') or '').strip()
         slot = agg.setdefault(erp, {'fg': '', 'fg_date': '', 'by_date': {}, 'total': 0.0,
                                     'group': grp, 'type': typ})
@@ -305,6 +312,7 @@ def read_dpr_rows(from_iso=None, to_iso=None, timeout=30, site=None, item_group=
         'columns': cols,
         'item_group': item_group or None,
         'item_type': item_type or None,
+        **_month_by_group(group_months),
         # every item type in this range/site (for the Item type dropdown), largest first
         'item_types': [{'type': k, 'items': len(v['items']), 'total': round(v['total'], 3)}
                        for k, v in sorted(types.items(), key=lambda kv: -kv[1]['total']) if k],
@@ -474,6 +482,18 @@ def _read_dpr_rows_from_lines(from_iso=None, to_iso=None, timeout=30, site=None)
     }
 
 
+def _month_by_group(group_months):
+    """Month-wise by item group table (same filters as the day-wise view)."""
+    months = sorted({m for g in group_months.values() for m in g['by_month']})
+    rows = [{'group': k, 'description': v['description'], 'items': len(v['items']),
+             'by_month': {m: round(v['by_month'].get(m, 0.0), 3) for m in months},
+             'total': round(v['total'], 3)}
+            for k, v in sorted(group_months.items(), key=lambda kv: (-kv[1]['total'], kv[0]))]
+    month_totals = {m: round(sum(g['by_month'].get(m, 0.0) for g in group_months.values()), 3)
+                    for m in months}
+    return {'months': months, 'group_months': rows, 'month_totals': month_totals}
+
+
 def _empty(error=None, columns=None):
     return {
         'ok': error is None,
@@ -486,6 +506,7 @@ def _empty(error=None, columns=None):
         'columns': columns or {},
         'item_groups': [],
         'item_types': [],
+        'months': [], 'group_months': [], 'month_totals': {},
         'error': error,
     }
 
