@@ -27,6 +27,23 @@ from django.conf import settings
 
 log = logging.getLogger(__name__)
 
+BUSY_MESSAGE = ('The data API is busy right now (other reports are loading from it), so this '
+                'request ran out of time. Nothing is wrong with the data - please click '
+                'Refresh view again in a minute.')
+
+
+def api_error_message(exc):
+    """Plain-language message for a failed data API call (shown on the page)."""
+    if isinstance(exc, requests.Timeout):
+        return BUSY_MESSAGE
+    if isinstance(exc, requests.ConnectionError):
+        return ('Cannot reach the data API (database-api service). It may be restarting - '
+                'please try again in a minute.')
+    resp = getattr(exc, 'response', None)
+    if resp is not None and resp.status_code in (502, 503, 504):
+        return BUSY_MESSAGE
+    return str(exc)
+
 
 def _norm(s):
     """Normalise a header: lowercase, strip, collapse spaces/underscores."""
@@ -218,7 +235,7 @@ def read_dpr_rows(from_iso=None, to_iso=None, timeout=30, site=None, item_group=
         return _read_dpr_rows_from_lines(from_iso, to_iso, timeout, site=site)
     except Exception as exc:                        # noqa: BLE001 - surface to UI
         log.exception('DPR API aggregate fetch failed')
-        return _empty(error=str(exc))
+        return _empty(error=api_error_message(exc))
 
     cols = {'header_row': 0, 'date': 'Direct_JR_Date', 'erp_code': 'Finished_Item_Description',
             'fg_item_code': 'Finished_Item_Code', 'produced_qty': 'Produced_Quantity',
@@ -309,7 +326,7 @@ def _read_dpr_rows_from_lines(from_iso=None, to_iso=None, timeout=30, site=None)
         header = next(stream, None)
     except Exception as exc:                        # noqa: BLE001 - surface to UI
         log.exception('DPR API fetch failed')
-        return _empty(error=str(exc))
+        return _empty(error=api_error_message(exc))
 
     if header is None:
         return _empty()   # no DPR lines in this date range
@@ -476,7 +493,7 @@ def read_dpr_detail(from_iso=None, to_iso=None, timeout=30, max_rows=_MAX_DETAIL
     except Exception as exc:                        # noqa: BLE001
         log.exception('DPR API fetch failed')
         return {'ok': False, 'headers': [], 'rows': [], 'date_col': None,
-                'row_count': 0, 'truncated': False, 'error': str(exc)}
+                'row_count': 0, 'truncated': False, 'error': api_error_message(exc)}
 
     if not all_rows:
         return {'ok': True, 'headers': [], 'rows': [], 'date_col': None,
@@ -615,7 +632,7 @@ def read_dpr_detail_page(from_iso=None, to_iso=None, page=1, page_size=DETAIL_PA
         data = resp.json().get('data') or []
     except Exception as exc:                        # noqa: BLE001 - surface to UI
         log.exception('DPR detail page fetch failed')
-        out['error'] = str(exc)
+        out['error'] = api_error_message(exc)
         return out
 
     headers = list(data[0].keys()) if data else []

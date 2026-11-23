@@ -18,7 +18,8 @@ from django.shortcuts import render
 from django.views.decorators.http import require_http_methods
 
 from . import exporter
-from .sheet_reader import DETAIL_PAGE_SIZE, read_dpr_detail_page, read_dpr_rows
+from .sheet_reader import (DETAIL_PAGE_SIZE, api_error_message, read_dpr_detail_page,
+                           read_dpr_rows)
 
 log = logging.getLogger(__name__)
 
@@ -116,7 +117,7 @@ def api_export_start(request):
                                           item_group=_group(body.get('group')))
     except Exception as exc:                        # noqa: BLE001
         log.exception('could not start export')
-        return JsonResponse({'ok': False, 'error': str(exc)}, status=502)
+        return JsonResponse({'ok': False, 'error': api_error_message(exc)}, status=502)
     return JsonResponse(payload, status=code)
 
 
