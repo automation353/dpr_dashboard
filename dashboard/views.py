@@ -49,7 +49,7 @@ def _site(value):
 
 
 def _group(value):
-    """Item group filter: free text from the dropdown ('' = all groups)."""
+    """Item group / item type filter: free text from a dropdown ('' = all)."""
     return str(value or '').strip()[:100] or None
 
 
@@ -66,7 +66,8 @@ def api_data(request):
     to_iso = _iso(request.GET.get('to'))
     site = _site(request.GET.get('site'))
     data = read_dpr_rows(from_iso=from_iso or None, to_iso=to_iso or None, site=site,
-                         item_group=_group(request.GET.get('group')))
+                         item_group=_group(request.GET.get('group')),
+                         item_type=_group(request.GET.get('type')))
     data['site'] = site or 'ALL'
     status = 200 if data.get('ok') else 502
     return JsonResponse(data, status=status)
@@ -114,7 +115,8 @@ def api_export_start(request):
                             status=400)
     try:
         code, payload = exporter.start_job(from_iso, to_iso, site=_site(body.get('site')),
-                                          item_group=_group(body.get('group')))
+                                          item_group=_group(body.get('group')),
+                                          item_type=_group(body.get('type')))
     except Exception as exc:                        # noqa: BLE001
         log.exception('could not start export')
         return JsonResponse({'ok': False, 'error': api_error_message(exc)}, status=502)
@@ -126,7 +128,7 @@ def api_export_status(request):
     if not meta:
         return JsonResponse({'ok': False, 'error': 'unknown export'}, status=404)
     return JsonResponse({'ok': True, **{k: meta.get(k) for k in
-                         ('id', 'state', 'rows', 'scanned', 'total', 'from', 'to', 'site', 'item_group',
+                         ('id', 'state', 'rows', 'scanned', 'total', 'from', 'to', 'site', 'item_group', 'item_type',
                           'name', 'size', 'error')}})
 
 

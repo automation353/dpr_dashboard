@@ -215,7 +215,8 @@ def _fetch_production_agg(from_iso, to_iso, timeout=60, site=None):
     return resp.json().get('data') or []
 
 
-def read_dpr_rows(from_iso=None, to_iso=None, timeout=30, site=None, item_group=None):
+def read_dpr_rows(from_iso=None, to_iso=None, timeout=30, site=None, item_group=None,
+                  item_type=None):
     """Return the item x date pivot for [from_iso, to_iso] (ISO dates or None).
 
     The totals are computed in the database (data API /agg/production), so any
@@ -243,8 +244,10 @@ def read_dpr_rows(from_iso=None, to_iso=None, timeout=30, site=None, item_group=
 
     agg = {}            # erp_code -> {"fg": str, "fg_date": iso, "by_date": {iso: qty}, "total": qty}
     counted = 0
-    groups = {}         # item group -> {"description", "items": set(), "total"} (before the group filter)
+    types = {}          # item type -> {"items": set(), "total"} (before any item filter)
+    groups = {}         # item group -> {"description", "items": set(), "total"} (after the type filter)
     want = (item_group or '').strip().upper()
+    want_type = (item_type or '').strip().upper()
     for r in recs:
         iso = _to_iso(r.get('date'))
         erp = str(r.get('erp_code') or '').strip().upper()   # same normalisation as before
@@ -253,6 +256,12 @@ def read_dpr_rows(from_iso=None, to_iso=None, timeout=30, site=None, item_group=
         if (from_iso and iso < from_iso) or (to_iso and iso > to_iso):
             continue
         qty = _num(r.get('produced_qty'))
+        typ = str(r.get('item_type') or '').strip()
+        t = types.setdefault(typ, {'items': set(), 'total': 0.0})
+        t['items'].add(erp)
+        t['total'] += qty
+        if want_type and typ.upper() != want_type:
+            continue
         grp = str(r.get('item_group') or '').strip()
         g = groups.setdefault(grp, {'description': str(r.get('item_group_description') or '').strip(),
                                     'items': set(), 'total': 0.0})
@@ -262,7 +271,7 @@ def read_dpr_rows(from_iso=None, to_iso=None, timeout=30, site=None, item_group=
             continue
         fg = str(r.get('finished_item_code') or '').strip()
         slot = agg.setdefault(erp, {'fg': '', 'fg_date': '', 'by_date': {}, 'total': 0.0,
-                                    'group': grp})
+                                    'group': grp, 'type': typ})
         if fg and (not slot['fg'] or iso < slot['fg_date']):   # FG code of the earliest day
             slot['fg'], slot['fg_date'] = fg, iso
         slot['by_date'][iso] = slot['by_date'].get(iso, 0.0) + qty
@@ -279,6 +288,7 @@ def read_dpr_rows(from_iso=None, to_iso=None, timeout=30, site=None, item_group=
             'erp_code': erp,
             'fg_item_code': v['fg'],
             'item_group': v['group'],
+            'item_type': v['type'],
             'by_date': {d: round(v['by_date'].get(d, 0.0), 3) for d in dates},
             'total': round(v['total'], 3),
         })
@@ -294,6 +304,10 @@ def read_dpr_rows(from_iso=None, to_iso=None, timeout=30, site=None, item_group=
         'row_count': counted,
         'columns': cols,
         'item_group': item_group or None,
+        'item_type': item_type or None,
+        # every item type in this range/site (for the Item type dropdown), largest first
+        'item_types': [{'type': k, 'items': len(v['items']), 'total': round(v['total'], 3)}
+                       for k, v in sorted(types.items(), key=lambda kv: -kv[1]['total']) if k],
         # every group in this range/site (for the Item group dropdown), largest first
         'item_groups': [{'group': k, 'description': v['description'], 'items': len(v['items']),
                          'total': round(v['total'], 3)}
@@ -471,6 +485,7 @@ def _empty(error=None, columns=None):
         'row_count': 0,
         'columns': columns or {},
         'item_groups': [],
+        'item_types': [],
         'error': error,
     }
 

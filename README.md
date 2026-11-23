@@ -20,10 +20,11 @@ All six JCPL sites are fetched (JCPL01, 02, 03, 05, 06, 07) from 1 April 2026. O
 JCPL01 and JCPL02 have Direct JR (production) entries in iON; the others return none.
 The **Site** filter on the page (All sites / one site) applies to the day-wise view,
 All Details and the Excel export (`site=` on every endpoint; list in `JCLP_DPR_SITES`).
-The **Item group** filter (groups produced in the chosen range/site, from the stock
-statement) applies to the day-wise view (`group=` on `/api/data`, which also returns the
-`item_groups` list) and the Excel export (`"group"` in the start body; rows of other groups
-are skipped while streaming). All Details is not filtered by group yet: the data API can
+The **Item type** filter (Finished Goods, Semi-finished Goods, ...; `type=`) and the
+**Item group** filter (groups produced in the chosen range/site/type, from the stock
+statement; `group=`) apply to the day-wise view (`group=` on `/api/data`, which also returns the
+`item_types` and `item_groups` lists) and the Excel export (`"type"`, `"group"` in the start
+body; other rows are skipped while streaming). All Details is not filtered by type/group yet: the data API can
 only filter raw rows on stored columns, and the item group is not stored in `direct_jr_lines`. Today's data shows
 up after that evening's sync. The data project is documented in `/root/database/README.md`.
 

@@ -150,6 +150,12 @@
       </select>
     </div>
     <div class="field">
+      <label for="itype">Item type</label>
+      <select id="itype" title="Finished Goods, Semi-finished Goods, ...">
+        <option value="">All item types</option>
+      </select>
+    </div>
+    <div class="field">
       <label for="group">Item group</label>
       <select id="group" title="Show one item group, or all groups">
         <option value="">All item groups</option>
@@ -197,8 +203,21 @@
 (function () {
   const $ = (id) => document.getElementById(id);
   const fromEl = $('from'), toEl = $('to'), siteEl = $('site'), statusEl = $('status');
-  const groupEl = $('group');
-  const siteLabel = () => (siteEl.value || 'all sites') + (groupEl.value ? `, item group ${groupEl.value}` : '');
+  const groupEl = $('group'), typeEl = $('itype');
+  const siteLabel = () => (siteEl.value || 'all sites') + (typeEl.value ? `, ${typeEl.value}` : '')
+    + (groupEl.value ? `, item group ${groupEl.value}` : '');
+  function fillTypes(list) {
+    const keep = typeEl.value;
+    const opts = ['<option value="">All item types</option>'];
+    let found = false;
+    for (const t of (list || [])) {
+      if (t.type === keep) found = true;
+      opts.push(`<option value="${esc(t.type)}">${esc(t.type)} (${t.items} items)</option>`);
+    }
+    if (keep && !found) opts.push(`<option value="${esc(keep)}">${esc(keep)} (no production here)</option>`);
+    typeEl.innerHTML = opts.join('');
+    typeEl.value = keep;
+  }
   // Item group options come with each day-wise load (the groups produced in that range/site).
   function fillGroups(list) {
     const keep = groupEl.value;
@@ -246,7 +265,8 @@
     $('tItems').textContent = items.length.toLocaleString('en-IN');
     $('tDays').textContent = dates.length.toLocaleString('en-IN');
     $('tRange').textContent = (dates.length ? `${shortDate(dates[0])} – ${shortDate(dates[dates.length - 1])}` : '—')
-      + ` · ${siteEl.value || 'All sites'}` + (withGroup && groupEl.value ? ` · ${groupEl.value}` : '');
+      + ` · ${siteEl.value || 'All sites'}` + (withGroup && typeEl.value ? ` · ${typeEl.value}` : '')
+      + (withGroup && groupEl.value ? ` · ${groupEl.value}` : '');
   }
 
   // All Details pages hold 500 rows, so its tiles come from the same database totals as
@@ -377,7 +397,7 @@
       await tiles;
       setStatus(`${data.total.toLocaleString('en-IN')} detail row(s) in this range (${siteEl.value || 'all sites'}) — ` +
                 `showing ${data.page_size.toLocaleString('en-IN')} per page.` +
-                (groupEl.value ? ' Item group filter is not applied here yet: All Details shows every group (Day-wise and Excel export are filtered).' : ''), 'ok');
+                ((groupEl.value || typeEl.value) ? ' Item type / group filters are not applied here yet: All Details shows every item (Day-wise and Excel export are filtered).' : ''), 'ok');
     } catch (e) {
       renderEmpty('Network error.');
       setStatus(String(e), 'err');
@@ -395,6 +415,7 @@
       if (toEl.value) u.searchParams.set('to', toEl.value);
       if (siteEl.value) u.searchParams.set('site', siteEl.value);
       if (groupEl.value) u.searchParams.set('group', groupEl.value);
+      if (typeEl.value) u.searchParams.set('type', typeEl.value);
       const r = await fetch(u);
       const data = await r.json();
       if (!r.ok || !data.ok) {
@@ -402,6 +423,7 @@
         setStatus(data.error || ('HTTP ' + r.status), 'err');
         return;
       }
+      fillTypes(data.item_types);
       fillGroups(data.item_groups);
       render(data);
       const across = data.has_dates ? ` across ${data.dates.length} day(s)` : ' (month totals — no date column yet)';
@@ -521,7 +543,7 @@
     try {
       const r = await fetch('/api/export/start', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ from: fromEl.value, to: toEl.value, site: siteEl.value, group: groupEl.value }),
+        body: JSON.stringify({ from: fromEl.value, to: toEl.value, site: siteEl.value, group: groupEl.value, type: typeEl.value }),
       });
       const job = await r.json();
       if (!r.ok || !job.ok) { setStatus(job.error || ('HTTP ' + r.status), 'err'); exportBtn.disabled = false; return; }
@@ -544,8 +566,8 @@
         if (exportCancelling) { setStatus('Cancelling export…', 'ok'); continue; }
         const pct = s.total ? Math.floor(100 * s.rows / s.total) : 0;
         setStatus(s.state === 'saving' ? 'Preparing Excel: saving file…'
-          : s.item_group
-            ? `Preparing Excel (${s.item_group}): checked ${(s.scanned || 0).toLocaleString('en-IN')} of ${s.total.toLocaleString('en-IN')} lines (${Math.floor(100 * (s.scanned || 0) / (s.total || 1))}%), ${s.rows.toLocaleString('en-IN')} in this group… you can keep using the dashboard.`
+          : (s.item_group || s.item_type)
+            ? `Preparing Excel (${[s.item_type, s.item_group].filter(Boolean).join(', ')}): checked ${(s.scanned || 0).toLocaleString('en-IN')} of ${s.total.toLocaleString('en-IN')} lines (${Math.floor(100 * (s.scanned || 0) / (s.total || 1))}%), ${s.rows.toLocaleString('en-IN')} in this group… you can keep using the dashboard.`
             : `Preparing Excel: ${s.rows.toLocaleString('en-IN')} of ${s.total.toLocaleString('en-IN')} rows (${pct}%)… you can keep using the dashboard.`, 'ok');
       }
     } catch (e) {
@@ -560,6 +582,8 @@
   pullBtn.addEventListener('click', pull);
   siteEl.addEventListener('change', () => { detailPage = 1; loadView(); });
   groupEl.addEventListener('change', () => { detailPage = 1; loadView(); });
+  // a new type has its own groups: start from all groups of that type
+  typeEl.addEventListener('change', () => { detailPage = 1; groupEl.value = ''; loadView(); });
   $('segGrid').addEventListener('click', () => setView('grid'));
   $('segDetail').addEventListener('click', () => setView('detail'));
   loadData();

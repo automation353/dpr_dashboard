@@ -171,7 +171,7 @@ def cancel_job(job_id):
 
 
 # ---------------------------------------------------------------- start
-def start_job(from_iso, to_iso, site=None, item_group=None):
+def start_job(from_iso, to_iso, site=None, item_group=None, item_type=None):
     """Validate, then launch the export process. Returns (status_code, payload)."""
     EXPORT_DIR.mkdir(parents=True, exist_ok=True)
     cleanup_old()
@@ -179,10 +179,10 @@ def start_job(from_iso, to_iso, site=None, item_group=None):
     # process may not have taken the export lock yet.
     with open(EXPORT_DIR / '.start.lock', 'a+') as start_lock:
         fcntl.flock(start_lock, fcntl.LOCK_EX)
-        return _start_locked(from_iso, to_iso, site, item_group)
+        return _start_locked(from_iso, to_iso, site, item_group, item_type)
 
 
-def _start_locked(from_iso, to_iso, site=None, item_group=None):
+def _start_locked(from_iso, to_iso, site=None, item_group=None, item_type=None):
     pending = _running_job()
     if pending and pending.get('state') == 'queued' and \
             time.time() - pending.get('updated', 0) > 60:
@@ -198,9 +198,10 @@ def _start_locked(from_iso, to_iso, site=None, item_group=None):
     if total == 0:
         return 400, {'ok': False, 'error': 'No rows in this date range' + (f' for {site}.' if site else '.')}
     job_id = uuid.uuid4().hex
-    group_part = re.sub(r'[^A-Za-z0-9]+', '-', item_group).strip('-') + '_' if item_group else ''
+    group_part = ''.join(re.sub(r'[^A-Za-z0-9]+', '-', v).strip('-') + '_'
+                         for v in (item_type, item_group) if v)
     name = f'DPR_all_details_{site or "all_sites"}_{group_part}{from_iso}_to_{to_iso}.xlsx'
-    _write_meta(job_id, id=job_id, state='queued', **{'from': from_iso, 'to': to_iso}, site=site, item_group=item_group,
+    _write_meta(job_id, id=job_id, state='queued', **{'from': from_iso, 'to': to_iso}, site=site, item_group=item_group, item_type=item_type,
                 total=total, rows=0, name=name, created=time.time(), error=None)
 
     _launch(job_id)
@@ -318,9 +319,11 @@ def _write(job_id, meta):
             info = fetch_item_info(meta['from'], meta['to'], meta.get('site'))
             header, stream = with_item_columns(header, stream, info)
             want = (meta.get('item_group') or '').strip().upper()
+            want_type = (meta.get('item_type') or '').strip().upper()
             g_at = header.index('Item_Group') if want and 'Item_Group' in header else None
-            if want and g_at is None:
-                raise RuntimeError('item group is not available from the data API right now')
+            t_at = header.index('Item_Type') if want_type and 'Item_Type' in header else None
+            if (want and g_at is None) or (want_type and t_at is None):
+                raise RuntimeError('item group / type is not available from the data API right now')
             keep = [i for i, h in enumerate(header) if h not in EXPORT_SKIP_COLUMNS]
             header = [header[i] for i in keep]
             sheet_no, on_sheet = 1, 0
@@ -333,6 +336,8 @@ def _write(job_id, meta):
                     _write_meta(job_id, rows=n, scanned=scanned)
                 if g_at is not None and str(row[g_at] or '').strip().upper() != want:
                     continue                            # other item group
+                if t_at is not None and str(row[t_at] or '').strip().upper() != want_type:
+                    continue                            # other item type
                 if on_sheet >= SHEET_MAX_ROWS:          # sheet full: continue on the next one
                     sheet_no += 1
                     on_sheet = 0
@@ -340,9 +345,12 @@ def _write(job_id, meta):
                 xw.write_row([_xl_value(row[i]) for i in keep])
                 n += 1
                 on_sheet += 1
-            if want and n == 0:
-                raise RuntimeError(f"No rows for item group '{meta.get('item_group')}' in this "
-                                   f"date range{' for ' + meta['site'] if meta.get('site') else ''}.")
+            if (want or want_type) and n == 0:
+                what = ' / '.join(f"{k} '{meta[f]}'" for k, f in (('item type', 'item_type'),
+                                                                   ('item group', 'item_group'))
+                                  if meta.get(f))
+                raise RuntimeError(f"No rows for {what} in this date range"
+                                   f"{' for ' + meta['site'] if meta.get('site') else ''}.")
         if cancel_flag.exists():
             raise _Cancelled
         _write_meta(job_id, rows=n, scanned=scanned, state='saving')
