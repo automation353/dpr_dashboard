@@ -239,13 +239,38 @@
     $('tDays').textContent = '—';
   }
 
-  function render(data) {
-    const { dates, items, daily_totals, grand_total } = data;
+  // KPI tiles. withGroup=false in All Details, whose rows are not filtered by item group.
+  function setTiles(data, withGroup) {
+    const { dates, items, grand_total } = data;
     $('tGrand').textContent = fmtNum(grand_total);
     $('tItems').textContent = items.length.toLocaleString('en-IN');
     $('tDays').textContent = dates.length.toLocaleString('en-IN');
     $('tRange').textContent = (dates.length ? `${shortDate(dates[0])} – ${shortDate(dates[dates.length - 1])}` : '—')
-      + ` · ${siteEl.value || 'All sites'}` + (groupEl.value ? ` · ${groupEl.value}` : '');
+      + ` · ${siteEl.value || 'All sites'}` + (withGroup && groupEl.value ? ` · ${groupEl.value}` : '');
+  }
+
+  // All Details pages hold 500 rows, so its tiles come from the same database totals as
+  // the day-wise view; fetched once per date range + site, not on every page click.
+  let kpiKey = '', kpiData = null;
+  async function loadDetailTiles() {
+    const key = `${fromEl.value}|${toEl.value}|${siteEl.value}`;
+    if (key === kpiKey && kpiData) { setTiles(kpiData, false); return; }
+    try {
+      const u = new URL(window.location.origin + '/api/data');
+      if (fromEl.value) u.searchParams.set('from', fromEl.value);
+      if (toEl.value) u.searchParams.set('to', toEl.value);
+      if (siteEl.value) u.searchParams.set('site', siteEl.value);
+      const r = await fetch(u);
+      const data = await r.json();
+      if (!r.ok || !data.ok) return;                 // tiles stay as they are; rows still show
+      kpiKey = key; kpiData = data;
+      if (viewMode === 'detail' && key === `${fromEl.value}|${toEl.value}|${siteEl.value}`) setTiles(data, false);
+    } catch (e) { /* tiles are extra; the table is what matters */ }
+  }
+
+  function render(data) {
+    const { dates, items, daily_totals, grand_total } = data;
+    setTiles(data, true);
 
     if (!items.length) {
       renderEmpty('No production rows in this date range.');
@@ -311,10 +336,6 @@
   }
 
   function renderDetail(data) {
-    $('tGrand').textContent = '—';
-    $('tItems').textContent = '—';
-    $('tDays').textContent = '—';
-    $('tRange').textContent = '—';
     const { headers, rows } = data;
     if (!headers.length || !rows.length) {
       renderEmpty('No rows in this date range.');
@@ -336,6 +357,7 @@
   async function loadDetail(page) {
     if (page) detailPage = page;
     setStatus('Loading detail…');
+    const tiles = loadDetailTiles();                 // in parallel with the page itself
     try {
       const u = new URL(window.location.origin + '/api/detail');
       if (fromEl.value) u.searchParams.set('from', fromEl.value);
@@ -352,6 +374,7 @@
       detailPage = data.page; detailPages = data.pages;
       renderDetail(data);
       renderPager(data);
+      await tiles;
       setStatus(`${data.total.toLocaleString('en-IN')} detail row(s) in this range (${siteEl.value || 'all sites'}) — ` +
                 `showing ${data.page_size.toLocaleString('en-IN')} per page.` +
                 (groupEl.value ? ' Item group filter is not applied here yet: All Details shows every group (Day-wise and Excel export are filtered).' : ''), 'ok');
