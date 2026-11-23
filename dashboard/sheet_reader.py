@@ -1,6 +1,6 @@
 """Read DPR lines from the database API and pivot them date-wise.
 
-Data source: the dpr-api `direct_jr_lines` endpoint (JCLP_DPR_API_URL), paged.
+Data source: the data API (`database-api`, /root/database) `direct_jr_lines` endpoint (JCLP_DPR_API_URL), paged.
 The historical notes below describe the original Google Sheet source; the
 rows have the same Direct JR x Raw Material shape, so the logic is unchanged.
 
@@ -166,11 +166,11 @@ def _fetch_api_rows(from_iso=None, to_iso=None, timeout=60, max_rows=None):
 
 
 class _AggUnavailable(Exception):
-    """The API has no production aggregate (e.g. older dpr-api)."""
+    """The API has no production aggregate (e.g. an older data API)."""
 
 
 def _fetch_production_agg(from_iso, to_iso, timeout=60):
-    """Item x date totals computed inside the database by the dpr-api:
+    """Item x date totals computed inside the database by the data API:
     GET <DPR_API_URL>/agg/production. Produced qty is taken once per JR there.
     Returns the list of {date, erp_code, finished_item_code, produced_qty, jr_count}.
     """
@@ -190,7 +190,7 @@ def _fetch_production_agg(from_iso, to_iso, timeout=60):
 def read_dpr_rows(from_iso=None, to_iso=None, timeout=30):
     """Return the item x date pivot for [from_iso, to_iso] (ISO dates or None).
 
-    The totals are computed in the database (dpr-api /agg/production), so any
+    The totals are computed in the database (data API /agg/production), so any
     range - a day or several years - is one small, fast response (~11k rows for
     April->today in ~1 s). Output shape is unchanged:
       {"ok", "has_dates", "dates", "items": [{"erp_code","fg_item_code","by_date","total"}],
@@ -203,7 +203,7 @@ def read_dpr_rows(from_iso=None, to_iso=None, timeout=30):
     try:
         recs = _fetch_production_agg(from_iso, to_iso, timeout=max(timeout, 60))
     except _AggUnavailable:
-        log.warning('dpr-api has no /agg/production - falling back to raw lines')
+        log.warning('data API has no /agg/production - falling back to raw lines')
         return _read_dpr_rows_from_lines(from_iso, to_iso, timeout)
     except Exception as exc:                        # noqa: BLE001 - surface to UI
         log.exception('DPR API aggregate fetch failed')
@@ -211,7 +211,7 @@ def read_dpr_rows(from_iso=None, to_iso=None, timeout=30):
 
     cols = {'header_row': 0, 'date': 'Direct_JR_Date', 'erp_code': 'Finished_Item_Description',
             'fg_item_code': 'Finished_Item_Code', 'produced_qty': 'Produced_Quantity',
-            'direct_jr_no': 'Direct_JR_No', 'source': 'dpr-api /agg/production'}
+            'direct_jr_no': 'Direct_JR_No', 'source': 'data API /agg/production'}
 
     agg = {}            # erp_code -> {"fg": str, "fg_date": iso, "by_date": {iso: qty}, "total": qty}
     counted = 0
@@ -512,7 +512,7 @@ def _api_params(from_iso, to_iso):
 
 
 def count_dpr_lines(from_iso=None, to_iso=None, timeout=60):
-    """Number of DPR lines in the range (dpr-api /count, computed in the DB)."""
+    """Number of DPR lines in the range (data API /count, computed in the DB)."""
     resp = requests.get(settings.DPR_API_URL.rstrip('/') + '/count',
                         params=_api_params(from_iso, to_iso), timeout=timeout)
     resp.raise_for_status()

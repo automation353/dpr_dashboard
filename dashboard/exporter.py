@@ -14,7 +14,7 @@ and risks timeouts. Instead:
 Server protection (this box has 2 CPU cores shared with other apps):
   * the export runs as its own systemd unit with CPUQuota=50% (at most half of
     one core), MemoryMax=1G and Nice=10, so it can never take over the server;
-  * it pauses between API pages so the dpr-api / PostgreSQL side stays light;
+  * it pauses between API pages so the data API / PostgreSQL side stays light;
   * any date range is allowed; ranges with more rows than one Excel sheet holds
     continue on extra sheets (All details (2), (3), ...);
   * only ONE export runs at a time (an exclusive lock file); a second request
@@ -274,7 +274,7 @@ _DONE = object()
 
 def _prefetch(stream, chunk=2000, depth=8):
     """Run the API stream in a background thread so the next page is being
-    fetched (by dpr-api, in its own process) while this one is written."""
+    fetched (by the data API, in its own process) while this one is written."""
     q = queue.Queue(maxsize=depth)
 
     def pump():

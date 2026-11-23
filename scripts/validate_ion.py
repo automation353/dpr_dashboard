@@ -1,123 +1,101 @@
 """Validate the DPR dashboard against TCS iON, day by day.
 
-Read-only: uses /opt/dpr_sync's fetch() to call iON directly (no DB writes),
-then compares with the dashboard's /api/data (pivot) and /api/detail (lines).
-Usage (from the repo root):
-  python3 scripts/validate_ion.py 2026-11-05                 # one day
-  python3 scripts/validate_ion.py 2026-10-01:2026-10-31      # a range
-  python3 scripts/validate_ion.py 2026-10-01:2026-10-31 2026-11-05   # mix
+Two steps, both read-only:
+  1. TCS iON = database = data API: runs the data project's own check,
+     `/root/database/ion validate dpr` (it calls iON; nothing is stored).
+  2. data API = this dashboard: for each day compares the dashboard's
+     /api/data (produced qty, JR count) and /api/detail (line count) with the
+     API's /agg/production and /count.
 
-Needs /opt/dpr_sync (its .env holds the iON keys; nothing iON-related is stored
-in this repo). Set DPR_SYNC_DIR / DPR_DASHBOARD_URL to override the defaults.
-Exit code is 0 when every day matches, 1 otherwise.
+Usage (from the repo root, any python3):
+  python3 scripts/validate_ion.py 2026-11-16                 # one day
+  python3 scripts/validate_ion.py 2026-11-16 2026-11-22      # a range (from to)
+
+Environment overrides: ION_CMD (default /root/database/ion), DPR_DASHBOARD_URL
+(default http://127.0.0.1:8020), ENV_FILE (default /root/.env, for
+JCLP_DPR_API_URL / JCLP_DPR_API_KEY). Exit code is 0 only when both steps match.
+
+Note: today's data is stored only after the 20:15 sync, so check up to yesterday.
 """
 import json
 import os
+import subprocess
 import sys
-import time
+import urllib.parse
 import urllib.request
-from collections import defaultdict
 from datetime import date, timedelta
 
-sys.path.insert(0, os.environ.get('DPR_SYNC_DIR', '/opt/dpr_sync'))
-import common  # noqa: E402  (loads iON config from /opt/dpr_sync/.env)
-from apis import direct_jr  # noqa: E402
-
+ION = os.environ.get('ION_CMD', '/root/database/ion')
 DASH = os.environ.get('DPR_DASHBOARD_URL', 'http://127.0.0.1:8020')
+ENV_FILE = os.environ.get('ENV_FILE', '/root/.env')
 
 
-def dash(path):
-    with urllib.request.urlopen(DASH + path, timeout=300) as r:
+def env(name):
+    for line in open(ENV_FILE):
+        if line.startswith(name + '='):
+            return line.split('=', 1)[1].strip().strip('"\'')
+    raise SystemExit(f'{name} not found in {ENV_FILE}')
+
+
+def get(url):
+    with urllib.request.urlopen(url, timeout=300) as r:
         return json.load(r)
 
 
-def dash_detail(iso):
-    """All detail lines for one day (the endpoint is paged; read every page)."""
-    page, rows, headers = 1, [], None
-    while True:
-        det = dash(f'/api/detail?from={iso}&to={iso}&page={page}&page_size=2000')
-        if not det.get('ok'):
-            raise SystemExit(f'dashboard /api/detail failed for {iso}: {det.get("error")}')
-        headers = headers or det['headers']
-        rows += det['rows']
-        if page >= (det.get('pages') or 1):
-            return headers, rows
-        page += 1
+def ddmmyyyy(d):
+    return d.strftime('%d-%m-%Y')
 
 
-def num(v):
-    n = common.to_num(v)
-    return float(n) if n is not None else 0.0
+def step1_ion(d_from, d_to):
+    print(f'== Step 1: TCS iON = database = data API ({ION} validate dpr)\n', flush=True)
+    proc = subprocess.run([ION, 'validate', 'dpr', '--from', ddmmyyyy(d_from),
+                           '--to', ddmmyyyy(d_to)], capture_output=True, text=True)
+    out = proc.stdout + proc.stderr
+    print(out, flush=True)
+    return proc.returncode == 0 and 'ALL DAYS MATCH' in out
 
 
-def summarise(lines, get):
-    """lines -> (docs, line_count, {(jr, erp): produced}, per-JR produced)"""
-    once = {}
-    for r in lines:
-        erp = (get(r, 'Finished_Item_Description') or '').strip().upper()
-        if not erp:
-            continue
-        once[(get(r, 'Direct_JR_No'), erp)] = num(get(r, 'Produced_Quantity'))
-    docs = {get(r, 'Direct_JR_No') for r in lines}
-    return docs, len(lines), once
+def step2_dashboard(d_from, d_to):
+    print('== Step 2: data API = DPR dashboard\n', flush=True)
+    api, key = env('JCLP_DPR_API_URL'), env('JCLP_DPR_API_KEY')
+    dash = get(f'{DASH}/api/data?from={d_from}&to={d_to}')
+    if not dash.get('ok'):
+        print('dashboard /api/data failed:', dash.get('error'))
+        return False
+    print(f'{"date":<11}{"API lines":>10}{"dash lines":>11}{"API JR":>8}{"dash JR":>8}'
+          f'{"API produced":>15}{"dash produced":>15}  result')
+    ok_all, d = True, d_from
+    while d <= d_to:
+        iso = d.isoformat()
+        q = urllib.parse.urlencode({'api_key': key, 'fromDate': ddmmyyyy(d), 'toDate': ddmmyyyy(d)})
+        agg = get(f'{api}/agg/production?{q}')['data']
+        a_lines = get(f'{api}/count?{q}')['count']
+        a_qty = round(sum(r['produced_qty'] or 0 for r in agg), 3)
+        a_jr = sum(r['jr_count'] or 0 for r in agg)
+        d_lines = get(f'{DASH}/api/detail?from={iso}&to={iso}&page_size=1')['total']
+        d_qty = dash['daily_totals'].get(iso, 0.0)
+        d_jr = get(f'{DASH}/api/data?from={iso}&to={iso}').get('row_count') or 0
+        ok = a_lines == d_lines and a_jr == d_jr and abs(a_qty - d_qty) < 0.01
+        ok_all &= ok
+        print(f'{iso:<11}{a_lines:>10,}{d_lines:>11,}{a_jr:>8,}{d_jr:>8,}'
+              f'{a_qty:>15,.2f}{d_qty:>15,.2f}  {"MATCH" if ok else "DIFF"}', flush=True)
+        d += timedelta(days=1)
+    print(f'\nRESULT: {"ALL DAYS MATCH (data API = dashboard)" if ok_all else "SOME DAYS DIFFER"}')
+    return ok_all
 
 
-def check_day(d):
-    iso = d.isoformat()
-    t0 = time.time()
-    ion = common.fetch(direct_jr, d, d)
-    secs = time.time() - t0
-    # iON records keep their own keys; keep only lines dated this day (as the sync does)
-    ion = [r for r in ion if common.to_date(r.get('Direct_JR_Date')) == d]
-    i_docs, i_lines, i_once = summarise(ion, lambda r, k: r.get(k))
-
-    h, rows = dash_detail(iso)
-    idx = {k: h.index(k) for k in h}
-    d_docs, d_lines, d_once = summarise(rows, lambda r, k: r[idx[k]])
-
-    pv = dash(f'/api/data?from={iso}&to={iso}')
-    d_total = pv['daily_totals'].get(iso, 0.0)
-    i_total = round(sum(i_once.values()), 3)
-
-    problems = []
-    if i_docs != d_docs:
-        only_i, only_d = sorted(i_docs - d_docs), sorted(d_docs - i_docs)
-        if only_i:
-            problems.append(f'{len(only_i)} JR in iON missing on dashboard: {only_i[:8]}')
-        if only_d:
-            problems.append(f'{len(only_d)} JR on dashboard not in iON (deleted/changed?): {only_d[:8]}')
-    if i_lines != d_lines:
-        problems.append(f'line count iON={i_lines} dash={d_lines}')
-    qty_diff = [(k, i_once[k], d_once.get(k)) for k in i_once
-                if k in d_once and abs(i_once[k] - d_once[k]) > 0.001]
-    if qty_diff:
-        problems.append(f'{len(qty_diff)} JR/item qty differ, e.g. {qty_diff[:5]}')
-    if abs(i_total - d_total) > 0.01:
-        problems.append(f'total iON={i_total:,.3f} dash={d_total:,.3f}')
-
-    status = 'MATCH' if not problems else 'DIFF'
-    print(f'{iso}  iON: {len(i_docs):>4} JR {i_lines:>6} lines {i_total:>14,.2f} | '
-          f'dashboard: {len(d_docs):>4} JR {d_lines:>6} lines {d_total:>14,.2f} | {status}'
-          f'  ({secs:.0f}s)', flush=True)
-    for p in problems:
-        print('     -', p, flush=True)
-    return not problems
+def main(argv):
+    if not argv or len(argv) > 2:
+        raise SystemExit(__doc__)
+    d_from = date.fromisoformat(argv[0])
+    d_to = date.fromisoformat(argv[-1])
+    if d_from > d_to:
+        d_from, d_to = d_to, d_from
+    ok1 = step1_ion(d_from, d_to)
+    ok2 = step2_dashboard(d_from, d_to)
+    print(f'\nOVERALL: {"iON = database = API = dashboard" if ok1 and ok2 else "MISMATCH - see above"}')
+    return 0 if ok1 and ok2 else 1
 
 
-def days(args):
-    for a in args:
-        if ':' in a:
-            f, t = (date.fromisoformat(x) for x in a.split(':'))
-            while f <= t:
-                yield f
-                f += timedelta(days=1)
-        else:
-            yield date.fromisoformat(a)
-
-
-if len(sys.argv) < 2:
-    sys.exit(__doc__)
-
-results = [check_day(d) for d in days(sys.argv[1:])]
-print(f'\n{sum(results)}/{len(results)} days match exactly', flush=True)
-sys.exit(0 if all(results) else 1)
+if __name__ == '__main__':
+    sys.exit(main(sys.argv[1:]))
