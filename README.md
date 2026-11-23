@@ -24,7 +24,11 @@ up after that evening's sync. The data project is documented in `/root/database/
 
 ## What it shows
 - **Day-wise**: an item x date grid of produced quantity with daily and grand totals.
-- **All Details**: every raw line with all columns, 500 rows per page.
+- **All Details**: every raw line with all columns, 500 rows per page, plus four item
+  columns after the ERP code: `Item_Type`, `Item_Category`, `Item_Group`,
+  `Item_Group_Description`. iON's Direct JR report has no item group; the data API looks
+  it up from the stock statement and returns it on `/agg/production`, which the dashboard
+  reads for the same dates/site (the Excel export includes them too).
 - **Export to Excel**: All Details for any chosen range as one `.xlsx` (more than 1,000,000 rows continue on extra sheets).
 
 ## Configuration (shared `/root/.env`, namespaced `JCLP_DPR_*`)

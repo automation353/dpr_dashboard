@@ -510,6 +510,49 @@ DETAIL_PAGE_SIZE = 500
 DETAIL_MAX_PAGE_SIZE = 2000
 
 
+# ---------------------------------------------------------------- item columns
+# iON's Direct JR report has no item group; the data API looks it up from the stock
+# statement (by ERP code) and returns it only on /agg/production. All Details and the
+# Excel export add these four columns right after the ERP code column.
+ITEM_COLUMNS = [('item_type', 'Item_Type'), ('item_category', 'Item_Category'),
+                ('item_group', 'Item_Group'), ('item_group_description', 'Item_Group_Description')]
+ERP_COLUMN = 'Finished_Item_Description'
+
+
+def fetch_item_info(from_iso, to_iso, site=None, timeout=120):
+    """ERP code -> (type, category, group, group description) for the items produced in
+    the range. Returns {} if the API does not provide them (columns then stay blank)."""
+    try:
+        recs = _fetch_production_agg(from_iso, to_iso, timeout=timeout, site=site)
+    except Exception:                               # noqa: BLE001 - never break the table
+        log.exception('item group lookup failed')
+        return {}
+    info = {}
+    for r in recs:
+        if 'item_group' not in r:
+            return {}
+        code = str(r.get('erp_code') or '').strip().upper()
+        if code:
+            info[code] = tuple(_cellstr(r.get(k)) for k, _ in ITEM_COLUMNS)
+    return info
+
+
+def with_item_columns(headers, rows, info):
+    """Insert the four item columns after the ERP code column (headers + each row)."""
+    if ERP_COLUMN not in headers:
+        return headers, rows
+    at = headers.index(ERP_COLUMN) + 1
+    blank = ('',) * len(ITEM_COLUMNS)
+    new_headers = headers[:at] + [h for _, h in ITEM_COLUMNS] + headers[at:]
+
+    def add(row):
+        extra = info.get(str(row[at - 1] or '').strip().upper(), blank)
+        return list(row[:at]) + list(extra) + list(row[at:])
+    if isinstance(rows, list):
+        return new_headers, [add(r) for r in rows]
+    return new_headers, (add(r) for r in rows)
+
+
 def _api_params(from_iso, to_iso, site=None):
     if not from_iso and not to_iso:
         today = date.today()
@@ -560,6 +603,11 @@ def read_dpr_detail_page(from_iso=None, to_iso=None, page=1, page_size=DETAIL_PA
 
     headers = list(data[0].keys()) if data else []
     rows = [[_cellstr(rec.get(h)) for h in headers] for rec in data]
+    if rows:
+        # item columns for just the dates on this page (a small, fast lookup)
+        page_dates = sorted({str(rec.get('Direct_JR_Date') or '')[:10] for rec in data} - {''})
+        info = fetch_item_info(page_dates[0], page_dates[-1], site) if page_dates else {}
+        headers, rows = with_item_columns(headers, rows, info)
     i_date = _pick([_norm(h) for h in headers], _DATE_KEYS) if headers else None
     out.update(ok=True, headers=headers, rows=rows, date_col=i_date, row_count=len(rows),
                total=total, page=page, pages=pages)

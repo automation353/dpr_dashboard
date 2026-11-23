@@ -40,7 +40,7 @@ import queue
 import threading
 
 
-from .sheet_reader import _iter_api_rows, count_dpr_lines
+from .sheet_reader import _iter_api_rows, count_dpr_lines, fetch_item_info, with_item_columns
 from .xlsx_stream import XlsxStreamWriter
 
 log = logging.getLogger(__name__)
@@ -313,6 +313,9 @@ def _write(job_id, meta):
         if header is None:
             xw.start_sheet('All details', [])
         else:
+            # item type / category / group columns, looked up once for the whole range
+            info = fetch_item_info(meta['from'], meta['to'], meta.get('site'))
+            header, stream = with_item_columns(header, stream, info)
             keep = [i for i, h in enumerate(header) if h not in EXPORT_SKIP_COLUMNS]
             header = [header[i] for i in keep]
             sheet_no, on_sheet = 1, 0
