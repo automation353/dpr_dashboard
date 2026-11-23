@@ -41,8 +41,15 @@ def _ddmmyyyy(iso):
     return f'{m.group(3)}-{m.group(2)}-{m.group(1)}' if m else ''
 
 
+def _site(value):
+    """'' / 'all' -> None (all sites); otherwise a known site code, else None."""
+    code = str(value or '').strip().upper()
+    return code if code in settings.DPR_SITES else None
+
+
 def index(request):
     return render(request, 'dashboard/index.html', {
+        'sites': settings.DPR_SITES,
         'sheet_tab': settings.DPR_SHEET_TAB,
         'pull_enabled': bool(settings.DPR_PULL_WEBHOOK_URL),
     })
@@ -51,7 +58,9 @@ def index(request):
 def api_data(request):
     from_iso = _iso(request.GET.get('from'))
     to_iso = _iso(request.GET.get('to'))
-    data = read_dpr_rows(from_iso=from_iso or None, to_iso=to_iso or None)
+    site = _site(request.GET.get('site'))
+    data = read_dpr_rows(from_iso=from_iso or None, to_iso=to_iso or None, site=site)
+    data['site'] = site or 'ALL'
     status = 200 if data.get('ok') else 502
     return JsonResponse(data, status=status)
 
@@ -59,7 +68,7 @@ def api_data(request):
 def api_detail(request):
     """One page of raw rows (all columns) for the All Details table.
 
-    ?from&to&page=1&page_size=500 - only that page is read from the database,
+    ?from&to&site=&page=1&page_size=500 - only that page is read from the database,
     so any date range is fast and light.
     """
     from_iso = _iso(request.GET.get('from'))
@@ -69,7 +78,10 @@ def api_detail(request):
         size = int(request.GET.get('page_size') or DETAIL_PAGE_SIZE)
     except ValueError:
         return JsonResponse({'ok': False, 'error': 'page/page_size must be numbers'}, status=400)
-    data = read_dpr_detail_page(from_iso or None, to_iso or None, page=page, page_size=size)
+    site = _site(request.GET.get('site'))
+    data = read_dpr_detail_page(from_iso or None, to_iso or None, page=page, page_size=size,
+                                site=site)
+    data['site'] = site or 'ALL'
     return JsonResponse(data, status=200 if data.get('ok') else 502)
 
 
@@ -94,7 +106,7 @@ def api_export_start(request):
         return JsonResponse({'ok': False, 'error': 'choose both From and To dates to export'},
                             status=400)
     try:
-        code, payload = exporter.start_job(from_iso, to_iso)
+        code, payload = exporter.start_job(from_iso, to_iso, site=_site(body.get('site')))
     except Exception as exc:                        # noqa: BLE001
         log.exception('could not start export')
         return JsonResponse({'ok': False, 'error': str(exc)}, status=502)
@@ -106,7 +118,7 @@ def api_export_status(request):
     if not meta:
         return JsonResponse({'ok': False, 'error': 'unknown export'}, status=404)
     return JsonResponse({'ok': True, **{k: meta.get(k) for k in
-                         ('id', 'state', 'rows', 'total', 'from', 'to', 'name', 'size', 'error')}})
+                         ('id', 'state', 'rows', 'total', 'from', 'to', 'site', 'name', 'size', 'error')}})
 
 
 @require_http_methods(['POST'])

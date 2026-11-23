@@ -171,7 +171,7 @@ def cancel_job(job_id):
 
 
 # ---------------------------------------------------------------- start
-def start_job(from_iso, to_iso):
+def start_job(from_iso, to_iso, site=None):
     """Validate, then launch the export process. Returns (status_code, payload)."""
     EXPORT_DIR.mkdir(parents=True, exist_ok=True)
     cleanup_old()
@@ -179,10 +179,10 @@ def start_job(from_iso, to_iso):
     # process may not have taken the export lock yet.
     with open(EXPORT_DIR / '.start.lock', 'a+') as start_lock:
         fcntl.flock(start_lock, fcntl.LOCK_EX)
-        return _start_locked(from_iso, to_iso)
+        return _start_locked(from_iso, to_iso, site)
 
 
-def _start_locked(from_iso, to_iso):
+def _start_locked(from_iso, to_iso, site=None):
     pending = _running_job()
     if pending and pending.get('state') == 'queued' and \
             time.time() - pending.get('updated', 0) > 60:
@@ -192,14 +192,14 @@ def _start_locked(from_iso, to_iso):
         return 409, {'ok': False, 'busy': True,
                      'error': 'Another Excel export is being prepared. Please try again '
                               'in a moment.',
-                     'running': {k: running.get(k) for k in ('from', 'to', 'rows', 'total')}}
+                     'running': {k: running.get(k) for k in ('from', 'to', 'site', 'rows', 'total')}}
 
-    total = count_dpr_lines(from_iso, to_iso)
+    total = count_dpr_lines(from_iso, to_iso, site=site)
     if total == 0:
-        return 400, {'ok': False, 'error': 'No rows in this date range.'}
+        return 400, {'ok': False, 'error': 'No rows in this date range' + (f' for {site}.' if site else '.')}
     job_id = uuid.uuid4().hex
-    name = f'DPR_all_details_{from_iso}_to_{to_iso}.xlsx'
-    _write_meta(job_id, id=job_id, state='queued', **{'from': from_iso, 'to': to_iso},
+    name = f'DPR_all_details_{site or "all_sites"}_{from_iso}_to_{to_iso}.xlsx'
+    _write_meta(job_id, id=job_id, state='queued', **{'from': from_iso, 'to': to_iso}, site=site,
                 total=total, rows=0, name=name, created=time.time(), error=None)
 
     _launch(job_id)
@@ -303,7 +303,8 @@ def _prefetch(stream, chunk=2000, depth=8):
 
 def _write(job_id, meta):
     _write_meta(job_id, state='running', started=time.time())
-    stream = _prefetch(_iter_api_rows(meta['from'], meta['to'], page_pause=PAGE_PAUSE))
+    stream = _prefetch(_iter_api_rows(meta['from'], meta['to'], page_pause=PAGE_PAUSE,
+                                      site=meta.get('site')))
     tmp = _part_path(job_id)
     cancel_flag = _cancel_path(job_id)
     n = 0

@@ -100,6 +100,10 @@ DPR_API_URL = os.environ.get(
     'JCLP_DPR_API_URL', 'http://127.0.0.1:8010/api/direct_jr_lines').strip()
 DPR_API_KEY = os.environ.get('JCLP_DPR_API_KEY', '').strip()
 DPR_API_PAGE_SIZE = int(os.environ.get('JCLP_DPR_API_PAGE_SIZE', '10000'))
+# Sites offered in the dashboard's Site filter (all JCPL sites the data project
+# fetches; a site without Direct JR data simply shows no rows).
+DPR_SITES = [s.strip().upper() for s in os.environ.get(
+    'JCLP_DPR_SITES', 'JCPL01,JCPL02,JCPL03,JCPL05,JCPL06,JCPL07').split(',') if s.strip()]
 
 # n8n pull is no longer used: data comes straight from the database API, so the
 # "Pull from iON → Sheet" button is switched off (empty URL = disabled/hidden).

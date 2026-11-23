@@ -104,7 +104,8 @@ def _cellstr(v):
     return str(v)
 
 
-def _iter_api_rows(from_iso=None, to_iso=None, timeout=60, max_rows=None, page_pause=0):
+def _iter_api_rows(from_iso=None, to_iso=None, timeout=60, max_rows=None, page_pause=0,
+                   site=None):
     """Stream DPR lines from the database API: yields the header list first,
     then one row list per line, fetching one page (10,000 lines) at a time.
 
@@ -115,6 +116,7 @@ def _iter_api_rows(from_iso=None, to_iso=None, timeout=60, max_rows=None, page_p
 
     page_pause > 0 (background export): rest that many seconds after each
     page, so the API/PostgreSQL side is never hit back-to-back.
+    site: only that site's lines (e.g. 'JCPL02'); None = all sites.
     """
     url = settings.DPR_API_URL
     key = settings.DPR_API_KEY
@@ -131,6 +133,7 @@ def _iter_api_rows(from_iso=None, to_iso=None, timeout=60, max_rows=None, page_p
         params['fromDate'] = _ddmmyyyy(from_iso)
     if to_iso:
         params['toDate'] = _ddmmyyyy(to_iso)
+    _add_site(params, site)
 
     headers, seen_ids, offset, n = None, set(), 0, 0
     while True:
@@ -160,6 +163,13 @@ def _iter_api_rows(from_iso=None, to_iso=None, timeout=60, max_rows=None, page_p
             time.sleep(page_pause)
 
 
+def _add_site(params, site):
+    """Filter on the data API's Site column (exact match) when a site is chosen."""
+    if site:
+        params['Site'] = site
+    return params
+
+
 def _fetch_api_rows(from_iso=None, to_iso=None, timeout=60, max_rows=None):
     """Like _iter_api_rows but as a list [headers, row, ...] (for capped reads)."""
     return list(_iter_api_rows(from_iso, to_iso, timeout=timeout, max_rows=max_rows))
@@ -169,7 +179,7 @@ class _AggUnavailable(Exception):
     """The API has no production aggregate (e.g. an older data API)."""
 
 
-def _fetch_production_agg(from_iso, to_iso, timeout=60):
+def _fetch_production_agg(from_iso, to_iso, timeout=60, site=None):
     """Item x date totals computed inside the database by the data API:
     GET <DPR_API_URL>/agg/production. Produced qty is taken once per JR there.
     Returns the list of {date, erp_code, finished_item_code, produced_qty, jr_count}.
@@ -180,6 +190,7 @@ def _fetch_production_agg(from_iso, to_iso, timeout=60):
         params['fromDate'] = _ddmmyyyy(from_iso)
     if to_iso:
         params['toDate'] = _ddmmyyyy(to_iso)
+    _add_site(params, site)
     resp = requests.get(url, params=params, timeout=timeout)
     if resp.status_code == 404:
         raise _AggUnavailable(resp.text[:200])
@@ -187,7 +198,7 @@ def _fetch_production_agg(from_iso, to_iso, timeout=60):
     return resp.json().get('data') or []
 
 
-def read_dpr_rows(from_iso=None, to_iso=None, timeout=30):
+def read_dpr_rows(from_iso=None, to_iso=None, timeout=30, site=None):
     """Return the item x date pivot for [from_iso, to_iso] (ISO dates or None).
 
     The totals are computed in the database (data API /agg/production), so any
@@ -201,10 +212,10 @@ def read_dpr_rows(from_iso=None, to_iso=None, timeout=30):
         today = date.today()
         from_iso, to_iso = today.replace(day=1).isoformat(), today.isoformat()
     try:
-        recs = _fetch_production_agg(from_iso, to_iso, timeout=max(timeout, 60))
+        recs = _fetch_production_agg(from_iso, to_iso, timeout=max(timeout, 60), site=site)
     except _AggUnavailable:
         log.warning('data API has no /agg/production - falling back to raw lines')
-        return _read_dpr_rows_from_lines(from_iso, to_iso, timeout)
+        return _read_dpr_rows_from_lines(from_iso, to_iso, timeout, site=site)
     except Exception as exc:                        # noqa: BLE001 - surface to UI
         log.exception('DPR API aggregate fetch failed')
         return _empty(error=str(exc))
@@ -258,7 +269,7 @@ def read_dpr_rows(from_iso=None, to_iso=None, timeout=30):
     }
 
 
-def _read_dpr_rows_from_lines(from_iso=None, to_iso=None, timeout=30):
+def _read_dpr_rows_from_lines(from_iso=None, to_iso=None, timeout=30, site=None):
     """Fallback: build the pivot from raw lines (slow on long ranges). Return an item x date pivot for [from_iso, to_iso].
 
     from_iso/to_iso are 'YYYY-MM-DD' or None (no bound on that side).
@@ -277,7 +288,7 @@ def _read_dpr_rows_from_lines(from_iso=None, to_iso=None, timeout=30):
     """
     # Stream page by page: only the header is kept as a "row"; data rows are
     # aggregated as they arrive and then dropped (memory stays flat).
-    stream = _iter_api_rows(from_iso, to_iso, timeout=max(timeout, 60))
+    stream = _iter_api_rows(from_iso, to_iso, timeout=max(timeout, 60), site=site)
     try:
         header = next(stream, None)
     except Exception as exc:                        # noqa: BLE001 - surface to UI
@@ -499,7 +510,7 @@ DETAIL_PAGE_SIZE = 500
 DETAIL_MAX_PAGE_SIZE = 2000
 
 
-def _api_params(from_iso, to_iso):
+def _api_params(from_iso, to_iso, site=None):
     if not from_iso and not to_iso:
         today = date.today()
         from_iso, to_iso = today.replace(day=1).isoformat(), today.isoformat()
@@ -508,19 +519,19 @@ def _api_params(from_iso, to_iso):
         params['fromDate'] = _ddmmyyyy(from_iso)
     if to_iso:
         params['toDate'] = _ddmmyyyy(to_iso)
-    return params
+    return _add_site(params, site)
 
 
-def count_dpr_lines(from_iso=None, to_iso=None, timeout=60):
+def count_dpr_lines(from_iso=None, to_iso=None, timeout=60, site=None):
     """Number of DPR lines in the range (data API /count, computed in the DB)."""
     resp = requests.get(settings.DPR_API_URL.rstrip('/') + '/count',
-                        params=_api_params(from_iso, to_iso), timeout=timeout)
+                        params=_api_params(from_iso, to_iso, site), timeout=timeout)
     resp.raise_for_status()
     return int(resp.json().get('count') or 0)
 
 
 def read_dpr_detail_page(from_iso=None, to_iso=None, page=1, page_size=DETAIL_PAGE_SIZE,
-                         timeout=60):
+                         timeout=60, site=None):
     """One page of raw DPR lines (all columns) for the All Details table.
 
     Only `page_size` rows are fetched (the API pages in the database), so any
@@ -534,10 +545,10 @@ def read_dpr_detail_page(from_iso=None, to_iso=None, page=1, page_size=DETAIL_PA
            'total': 0, 'page': page, 'page_size': page_size, 'pages': 0,
            'truncated': False, 'error': None}
     try:
-        total = count_dpr_lines(from_iso, to_iso, timeout=timeout)
+        total = count_dpr_lines(from_iso, to_iso, timeout=timeout, site=site)
         pages = max(1, -(-total // page_size))
         page = min(page, pages)
-        params = _api_params(from_iso, to_iso)
+        params = _api_params(from_iso, to_iso, site)
         params.update(limit=page_size, offset=(page - 1) * page_size)
         resp = requests.get(settings.DPR_API_URL, params=params, timeout=timeout)
         resp.raise_for_status()

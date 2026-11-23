@@ -16,8 +16,10 @@ separate from the jcpl portal: its own repo, venv, settings, port and process.
 3. **This dashboard** (port 8020) calls the data API only. Produced qty is counted
    **once per Direct JR + item + date** (it repeats on every raw-material line).
 
-All JCPL sites are included (since 19 Nov 2026: JCPL01 and JCPL02 have Direct JR data);
-the `Site` column in All Details / the Excel file tells them apart. Today's data shows
+All six JCPL sites are fetched (JCPL01, 02, 03, 05, 06, 07) from 1 April 2026. Only
+JCPL01 and JCPL02 have Direct JR (production) entries in iON; the others return none.
+The **Site** filter on the page (All sites / one site) applies to the day-wise view,
+All Details and the Excel export (`site=` on every endpoint; list in `JCLP_DPR_SITES`). Today's data shows
 up after that evening's sync. The data project is documented in `/root/database/README.md`.
 
 ## What it shows
@@ -31,6 +33,7 @@ up after that evening's sync. The data project is documented in `/root/database/
 | `JCLP_DPR_API_URL` | data API table URL, `http://127.0.0.1:8010/api/direct_jr_lines` |
 | `JCLP_DPR_API_KEY` | the data API's dpr key (sent as `api_key`) |
 | `JCLP_DPR_API_PAGE_SIZE` | rows per API page when streaming (default `10000`) |
+| `JCLP_DPR_SITES` | sites in the Site filter (default `JCPL01,JCPL02,JCPL03,JCPL05,JCPL06,JCPL07`) |
 | `JCLP_DPR_DJANGO_SECRET_KEY` | Django secret (a dev fallback exists; set one in production) |
 | `JCLP_DPR_DJANGO_DEBUG` | `True`/`False` |
 | `JCLP_DPR_DJANGO_ALLOWED_HOSTS` | comma-separated hosts |
@@ -55,9 +58,9 @@ from plain-http pages as "Unconfirmed". `http://<host>:8020/` still works direct
 
 ## Endpoints
 - `GET /`: the dashboard.
-- `GET /api/data?from=YYYY-MM-DD&to=YYYY-MM-DD`: date-wise pivot JSON.
-- `GET /api/detail?from&to&page=1&page_size=500`: one page of raw lines (max 2000 per page).
-- `POST /api/export/start` with body `{"from","to"}`: starts an Excel export and returns `{id,total}`.
+- `GET /api/data?from=YYYY-MM-DD&to=YYYY-MM-DD&site=JCPL02`: date-wise pivot JSON (`site` optional = all).
+- `GET /api/detail?from&to&site&page=1&page_size=500`: one page of raw lines (max 2000 per page).
+- `POST /api/export/start` with body `{"from","to","site"}`: starts an Excel export and returns `{id,total}`.
   It returns 409 if another export is running, or 400 for a bad or too-long range.
 - `GET /api/export/status?id=...`: progress (`queued|running|saving|done|error|cancelled`).
 - `POST /api/export/cancel` with body `{"id"}`: stops a queued or running export (the page's
